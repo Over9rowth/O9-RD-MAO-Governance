@@ -1,0 +1,16 @@
+{
+  "project_id": "PRJ-001",
+  "sop_version": "O9-RD-Next-V1.0",
+  "route": "M",
+  "state": {
+    "phase": "G0",
+    "execution_state": "active",
+    "gate_results": {}
+  },
+  "active_baseline": {
+    "baseline_id": null,
+    "spec_sha256": null,
+    "frozen_at": null
+  },
+  "detached_approvals": []
+}
