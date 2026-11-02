@@ -1,12 +1,19 @@
 # 📘 O9-RD-MAO-Governance
 ### 从零构建高可靠多智能体系统：软件工程治理与 Multi-Agent 编排 (MAO) 完全指南
 
+<p align="left">
+  <strong>🌐 Language / 语言切换：</strong>
+  <a href="./README.md">🇨🇳 简体中文</a> | 
+  <a href="./README_EN.md">🇬🇧 English Version</a>
+</p>
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Version](https://img.shields.io/badge/O9--RD--Next-V1.0-brightgreen.svg)](./00-O9-RD-Next-V1.0-完整规范与实战模板.md)
 [![Author](https://img.shields.io/badge/Author-曾威长%2FOver9rowth-purple.svg)](https://github.com/Over9rowth)
+[![Docs](https://img.shields.io/badge/Docs-中文%20%7C%20English-orange.svg)](./README_EN.md)
 
 > **📌 项目简介 (About)**：从零构建高可靠多智能体系统（MAO）——融合软件工程治理思想（一源三轨、契约先行、黑盒先行、SHA-256 哈希防伪）的工业级 AI 研发工作流规范、完整理论蓝皮书与开箱即用定制 Meta-Prompt。  
-> *(Industrial-grade Multi-Agent Orchestration Governance Framework & Complete Guide. Taming LLMs with Software Engineering discipline.)*
+> *(Industrial-grade Multi-Agent Orchestration Governance Framework & Complete Guide. Taming LLMs with Software Engineering discipline. 👉 **[Click here for English Documentation](./README_EN.md)**)*
 >
 > **🏷️ 核心标签 (Topics)**：`multi-agent-systems` · `agent-orchestration` · `software-engineering` · `ai-governance` · `llm-workflow` · `design-by-contract` · `black-box-testing` · `o9-rd`
 
@@ -20,8 +27,9 @@
 
 ---
 
-## 📂 仓库核心目录与阅读导航
+## 📂 仓库核心目录与阅读导航 (Chinese & English)
 
+### 🇨🇳 中文版全集 (Chinese Edition)
 | 序号 | 文件入口 | 定位与适用场景 |
 | :--- | :--- | :--- |
 | 🛠️ **00** | **[《O9-RD Next V1.0 完整规范与实战模板》](./00-O9-RD-Next-V1.0-完整规范与实战模板.md)** | **【实战宪法与工具箱】** 含精简版 G0~G7 主规范、开箱即用的“核心四件套”文件模板（JSON/YAML/MD）及四大角色唤醒口令。 |
@@ -29,6 +37,13 @@
 | 📗 **02** | **[《第二卷：空间状态与流程质量篇 (第 6~11 章)》](./02-Part2-空间状态与流程质量篇(第6-11章).md)** | **【核心机制深潜】** 详解上下文防污染、四步哈希冻结与外部签名、三态分离、并发文件写入锁、风险路由、三层契约、A/B/C 三视角盲评与“黑盒先行”铁律。 |
 | 📘 **03** | **[《第三卷：安全韧性演进篇与实战附录 (第 12~14 章 + 附录)》](./03-Part3-安全韧性演进篇与实战附录(第12-14章+附录).md)** | **【高阶保障与全量字典】** 涵盖 E2 沙箱六项正反向探测、C0-C3 四级变更、80% 残血安全交接、双环成对度量、人工埋雷校准，以及核心术语速查词典与主流框架对比。 |
 | 🤖 **04** | **[《程序员 MAO 工作流定制教练 · Meta-Prompt》](./04-程序员MAO工作流定制教练-MetaPrompt.md)** | **【一键量体裁衣】** 将此提示词直接喂给 Claude / GPT / DeepSeek，AI 将化身敏捷工程教练，通过 4 个简单问题为你量身裁剪最适合当前项目的极简多智能体工作流！ |
+
+### 🇬🇧 英文版核心套件 (English Edition)
+| No. | Document Link | Description |
+| :--- | :--- | :--- |
+| 🌐 **EN-Home** | **[English Overview & Architecture Guide (`README_EN.md`)](./README_EN.md)** | Full architectural overview, core pillars, and quick-start guide in English. |
+| 🛠️ **EN-00** | **[O9-RD Next V1.0 Master Specification & 4-Artifact Templates](./en/00-O9-RD-Next-V1.0-Specification-and-Templates.md)** | Complete English SOP (G0-G7 gates, S/M/L routing, E2 sandboxing) + ready-to-use JSON/YAML/MD templates & Agent system prompts. |
+| 🤖 **EN-04** | **[Agile MAO Workflow Customizer · Meta-Prompt (English)](./en/04-Agile-MAO-Coach-MetaPrompt-EN.md)** | Feed this Meta-Prompt to Claude/GPT to interactively tailor a lightweight Multi-Agent workflow for your specific tech stack. |
 
 ---
 
@@ -53,17 +68,6 @@ flowchart TD
         P -.-> G0
     end
 ```
-
----
-
-## 🚀 3 分钟快速开始 (Quick Start)
-
-1. **如果你想立刻让 AI 帮你定制一套轻量工作流**：
-   直接打开 [`04-程序员MAO工作流定制教练-MetaPrompt.md`](./04-程序员MAO工作流定制教练-MetaPrompt.md)，复制全文发给你的日常 AI 助手（如 Claude / ChatGPT），回答它提出的 4 个小问题，即可拿到为你项目量身定做的极简文件模板与角色口令。
-2. **如果你想直接启用完整的工业级 O9-RD 工作流**：
-   打开 [`00-O9-RD-Next-V1.0-完整规范与实战模板.md`](./00-O9-RD-Next-V1.0-完整规范与实战模板.md)，将第二部分的 **“核心四件套模板”**（`project_state.json`、`spec_and_contracts.md`、`review_and_defects.yaml`、`rtm_acceptance.md`）复制到你的项目工作区即可启动。
-3. **如果你想系统性学习 Multi-Agent 编排与软件工程治理理论**：
-   请按顺序阅读 `01-Part1` -> `02-Part2` -> `03-Part3`。
 
 ---
 
