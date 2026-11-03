@@ -230,6 +230,13 @@ class TestGateRunnerV16(unittest.TestCase):
         self.assertEqual(self.run_cli("freeze").returncode, 0)
         self.assertEqual(self.run_cli("check", ".").returncode, 0)
 
+    def test_10_g3_03_trust_reset_works_on_an_empty_readonly_ledger(self):
+        # `init` leaves an empty, read-only approvals.jsonl; trust-reset must still work.
+        self.run_cli("init")
+        self.assertEqual(self.run_cli("trust-reset", PROJECT_ID).returncode, 0)
+        self.assertEqual(self.run_cli("freeze").returncode, 0)
+        self.assertEqual(self.run_cli("check", ".").returncode, 0)
+
     # ---------------- G5-02 ----------------
 
     def test_06_g5_02_evidence_must_live_inside_repo_root(self):

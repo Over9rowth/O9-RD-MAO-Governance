@@ -622,11 +622,15 @@ def cmd_trust_reset(confirm_token: str, key=None):
             anchor_file.replace(anchor_bak)
             archived.append(anchor_bak.name)
 
-        if apr_log.exists() and apr_log.stat().st_size > 0:
+        if apr_log.exists():
+            # The ledger is kept read-only by design; it must be made writable before it can
+            # be archived or truncated (Linux 0444 and the Windows read-only attribute both
+            # refuse the write outright).
             set_writable(apr_log)
-            ledger_bak = apr_log.with_name(f"{apr_log.name}.bak.{stamp}")
-            apr_log.replace(ledger_bak)
-            archived.append(ledger_bak.name)
+            if apr_log.stat().st_size > 0:
+                ledger_bak = apr_log.with_name(f"{apr_log.name}.bak.{stamp}")
+                apr_log.replace(ledger_bak)
+                archived.append(ledger_bak.name)
 
         apr_log.write_text("", encoding="utf-8")
         set_readonly(apr_log)
