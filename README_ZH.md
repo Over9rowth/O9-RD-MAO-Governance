@@ -72,5 +72,5 @@ MIT License © 2026 **曾威长/Over9rowth**
 
 ---
 <p align="center">
-  <img src="./docs/suiren-badge.svg" alt="OVER9ROWTH · 燧人计划" width="420" />
+  <img src="./docs/suiren-badge.svg" alt="OVER9ROWTH · 燧人计划" width="400" />
 </p>
