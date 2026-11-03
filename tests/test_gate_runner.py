@@ -1,3 +1,4 @@
+# O9-RD-OFFICIAL-CONFORMANCE-TEST
 import unittest
 import tempfile
 import subprocess
@@ -21,10 +22,13 @@ class TestGateRunnerV15(unittest.TestCase):
         (self.cwd / "app_main.py").write_text("def main():\n    return 0\n", encoding="utf-8")
 
     def make_g5_passable(self):
+        import datetime, re
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         rev_file = self.cwd / "o9_workspace" / "review_and_defects.yaml"
         content = rev_file.read_text(encoding="utf-8")
         content = content.replace("source_code_hidden_verified: false", "source_code_hidden_verified: true")
         content = content.replace("exit_code: -1", "exit_code: 0")
+        content = re.sub(r"""recorded_at:\s*["'][^"']*["']""", f'recorded_at: "{now_iso}"', content)
         rev_file.write_text(content, encoding="utf-8")
         ev_file = self.cwd / "o9_workspace" / "evidence" / "run-bb-001.log"
         ev_file.parent.mkdir(parents=True, exist_ok=True)

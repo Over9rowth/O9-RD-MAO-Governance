@@ -34,7 +34,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from contextlib import contextmanager
 
-VERSION = "O9-RD-Next-V1.6.2"
+VERSION = "O9-RD-Next-V1.6.3"
 
 # V1.6.1 / R10: the ledger lock lives OUTSIDE the audited workspace so that a
 # same-UID agent cannot permanently DoS signing by pre-creating the lock directory,
@@ -60,13 +60,14 @@ BASELINE_SPEC_FILE = "spec_and_contracts.md"
 
 CODE_EXTENSIONS = {
     ".py", ".ts", ".tsx", ".js", ".jsx", ".vue", ".go", ".rs",
-    ".java", ".c", ".cpp", ".h", ".cs", ".rb", ".php", ".sh", ".kt", ".swift", ".ipynb"
+    ".java", ".c", ".cpp", ".h", ".cs", ".rb", ".php", ".sh", ".kt", ".swift", ".ipynb",
+    ".mjs", ".cjs", ".pyi"
 }
 # A6 Fix: removed 'tests' from SKIP_DIRS so production stubs hidden in tests/ are caught (test_gate_runner.py is excluded by filename)
-# V1.6.2: ALWAYS_SKIP_DIRS skipped at any depth; ROOT_ONLY_SKIP_DIRS skipped only at target root
+# V1.6.3 / 1.11b: remove docs, prompts, templates from SKIP_DIRS so code hidden under docs/ is scanned
 ALWAYS_SKIP_DIRS = {".git", "o9_workspace", "__pycache__", "node_modules", ".venv"}
-ROOT_ONLY_SKIP_DIRS = {"docs", "prompts", "templates"}
-SKIP_DIRS = ALWAYS_SKIP_DIRS | ROOT_ONLY_SKIP_DIRS
+ROOT_ONLY_SKIP_DIRS = set()
+SKIP_DIRS = ALWAYS_SKIP_DIRS
 
 # V1.6.1 / R04: never exempt a file by BARE FILENAME (that let `mv cheat.py confirm.py`
 # walk straight through the gate). Only the two conformance test files that ship with
@@ -74,11 +75,22 @@ SKIP_DIRS = ALWAYS_SKIP_DIRS | ROOT_ONLY_SKIP_DIRS
 # `tests/` directory stays fully scanned, so hiding stubs there is still caught
 # (that is what A6 asked for).
 SELF_TEST_BASENAMES = ("test_gate_runner.py", "test_v16_controls.py")
+OFFICIAL_CONFORMANCE_MARKER = "# O9-RD-OFFICIAL-CONFORMANCE-TEST"
 
 
 def self_test_paths() -> set:
     root = Path(__file__).resolve().parent / "tests"
     return {(root / name).resolve() for name in SELF_TEST_BASENAMES}
+
+
+def get_official_test_hashes() -> set:
+    root = Path(__file__).resolve().parent / "tests"
+    hashes = set()
+    for name in SELF_TEST_BASENAMES:
+        p = root / name
+        if p.is_file():
+            hashes.add(sha256_file(p))
+    return hashes
 
 DEFAULT_STATE_JSON = {
     "project_id": "PRJ-2026-001",
@@ -156,11 +168,20 @@ def read_text_auto_encoding(filepath: Path) -> str:
     return raw.decode("utf-8", errors="ignore")
 
 def sha256_file(filepath: Path) -> str:
-    h = hashlib.sha256()
-    with open(filepath, "rb") as f:
-        while chunk := f.read(8192):
-            h.update(chunk)
-    return h.hexdigest()
+    if not filepath.exists():
+        return ""
+    if not filepath.is_file():
+        print(f"[BLOCKER] Expected regular file but found directory or special file: {filepath}")
+        sys.exit(1)
+    try:
+        h = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            while chunk := f.read(8192):
+                h.update(chunk)
+        return h.hexdigest()
+    except (OSError, PermissionError) as e:
+        print(f"[BLOCKED] Could not hash file {filepath}: {e}")
+        sys.exit(1)
 
 def compute_hmac(secret: str, payload: str) -> str:
     return hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -215,10 +236,11 @@ def _lock_owner_alive(lock_dir: Path) -> bool:
 
 @contextmanager
 def workspace_lock(ws: Path):
-    """C-09 / A11b + V1.6.1 R10 Fix + V1.6.2 1.14: inter-process lock with owner pid and stale reclaim."""
+    """C-09 / A11b + V1.6.1 R10 Fix + V1.6.2/V1.6.3 1.14b: inter-process lock with owner pid, stale reclaim, and readonly file cleanup."""
     lock_dir = get_lock_dir(ws)
     if lock_dir.is_file():
         try:
+            set_writable(lock_dir)
             lock_dir.unlink()
         except Exception:
             pass
@@ -236,9 +258,11 @@ def workspace_lock(ws: Path):
         except FileExistsError:
             if lock_dir.is_file():
                 try:
+                    set_writable(lock_dir)
                     lock_dir.unlink()
                 except Exception:
                     pass
+                time.sleep(0.02)
                 continue
             age = _lock_age_seconds(lock_dir)
             if age > LOCK_STALE_SECONDS or not _lock_owner_alive(lock_dir):
@@ -387,42 +411,62 @@ def read_ledger_records(ws: Path) -> list:
     apr_log = ws / "approvals.jsonl"
     if not apr_log.exists():
         return []
-    records = []
-    with open(apr_log, "r", encoding="utf-8") as f:
-        for idx, line in enumerate(f, 1):
-            line = line.strip()
-            if line:
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    print(f"[BLOCKER] Corrupted JSON at line #{idx} in approvals.jsonl!")
-                    sys.exit(1)
-                # C-11 / A9b Fix: Ensure record is a JSON object (dict), never a list/primitive
-                if not isinstance(rec, dict):
-                    print(f"[BLOCKER] Non-object JSON record at line #{idx} in approvals.jsonl!")
-                    sys.exit(1)
-                records.append(rec)
-    return records
+    if not apr_log.is_file():
+        print(f"[BLOCKER] Expected regular file but found directory or special file: {apr_log}")
+        sys.exit(1)
+    try:
+        records = []
+        with open(apr_log, "r", encoding="utf-8") as f:
+            for idx, line in enumerate(f, 1):
+                line = line.strip()
+                if line:
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        print(f"[BLOCKER] Corrupted JSON at line #{idx} in approvals.jsonl!")
+                        sys.exit(1)
+                    # C-11 / A9b Fix: Ensure record is a JSON object (dict), never a list/primitive
+                    if not isinstance(rec, dict):
+                        print(f"[BLOCKER] Non-object JSON record at line #{idx} in approvals.jsonl!")
+                        sys.exit(1)
+                    records.append(rec)
+        return records
+    except (OSError, PermissionError) as e:
+        print(f"[BLOCKED] Could not read ledger file {apr_log}: {e}")
+        sys.exit(1)
 
 def append_ledger_record(ws: Path, record: dict, secret: str, seq: int):
     apr_log = ws / "approvals.jsonl"
-    if apr_log.exists():
-        set_writable(apr_log)
-    with open(apr_log, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    set_readonly(apr_log)
-    sync_external_anchor(ws, secret, seq)
+    if apr_log.exists() and not apr_log.is_file():
+        print(f"[BLOCKER] Expected regular file but found directory or special file: {apr_log}")
+        sys.exit(1)
+    try:
+        if apr_log.exists():
+            set_writable(apr_log)
+        with open(apr_log, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        set_readonly(apr_log)
+        sync_external_anchor(ws, secret, seq)
+    except (OSError, PermissionError) as e:
+        print(f"[BLOCKED] Could not write ledger record to {apr_log}: {e}")
+        sys.exit(1)
 
 def load_state(ws: Path) -> dict:
     state_file = ws / "project_state.json"
     if not state_file.exists():
         print(f"[BLOCKED] Missing {state_file}. Run: python gate_runner.py init")
         sys.exit(1)
+    if not state_file.is_file():
+        print(f"[BLOCKER] Expected regular file but found directory or special file: {state_file}")
+        sys.exit(1)
     try:
         state = json.loads(state_file.read_text(encoding="utf-8"))
         if not isinstance(state, dict):
             raise ValueError("Root must be a JSON object")
         return state
+    except (OSError, PermissionError) as e:
+        print(f"[BLOCKED] Could not read {state_file}: {e}")
+        sys.exit(1)
     except Exception as e:
         print(f"[BLOCKED] Corrupted JSON in {state_file}: {e}")
         sys.exit(1)
@@ -436,6 +480,37 @@ def save_state(ws: Path, state: dict):
 # composite manifest (G3-01) and the local project registry (G3-03).
 # ---------------------------------------------------------------------------
 
+def strip_yaml_comments(raw_text: str) -> str:
+    """V1.6.3 / N2: Quote-aware YAML comment stripper.
+    
+    Tracks single and double quotes. Strips '#' and everything after it ONLY when '#'
+    is outside quotes AND (at line start or preceded by whitespace ' ' or '\t').
+    """
+    clean_lines = []
+    for line in raw_text.splitlines():
+        in_single = False
+        in_double = False
+        escaped = False
+        comment_idx = None
+        for idx, ch in enumerate(line):
+            if ch == "\\" and in_double:
+                escaped = not escaped
+                continue
+            if ch == "'" and not in_double:
+                in_single = not in_single
+            elif ch == '"' and not in_single and not escaped:
+                in_double = not in_double
+            elif ch == '#' and not in_single and not in_double:
+                if idx == 0 or line[idx - 1] in (' ', '\t'):
+                    comment_idx = idx
+                    break
+            escaped = False
+        if comment_idx is not None:
+            clean_lines.append(line[:comment_idx].rstrip())
+        else:
+            clean_lines.append(line)
+    return "\n".join(clean_lines)
+
 def parse_kv_line(text: str):
     """Parses one `key: value` YAML scalar line into (lower_key, unquoted_value)."""
     m = re.match(r"^([A-Za-z0-9_.\-]+)\s*:\s*(.*)$", text)
@@ -443,21 +518,19 @@ def parse_kv_line(text: str):
         return None
     key = m.group(1).strip().lower()
     val = m.group(2).strip()
-    if " #" in val and not (val.startswith("'") or val.startswith('"')):
-        val = val.split(" #", 1)[0].strip()
     return key, val.strip().strip("'\"")
 
 def extract_yaml_items(yaml_text: str, id_key: str) -> list:
-    """V1.6 / G5-03: Order-independent list-item extractor.
+    """V1.6 / G5-03 + V1.6.3 Top 2: Order-independent list-item extractor.
 
     Collects every YAML list item (`- key: value`) together with all of its sibling
     `key: value` lines, regardless of the ORDER in which the keys appear and
     regardless of the parent key name (`defects:`, `open_defects:`, `g5_test_runs:` ...).
-    Only items carrying `id_key` are returned.
     """
+    clean_text = strip_yaml_comments(yaml_text)
     items, cur, cur_indent = [], None, None
-    for raw in yaml_text.splitlines():
-        if not raw.strip() or raw.lstrip().startswith("#"):
+    for raw in clean_text.splitlines():
+        if not raw.strip():
             continue
         stripped = raw.strip()
         indent = len(raw) - len(raw.lstrip())
@@ -487,6 +560,8 @@ def extract_yaml_items(yaml_text: str, id_key: str) -> list:
             cur[kv[0]] = kv[1]
     if cur is not None:
         items.append(cur)
+    if id_key in ("g5_test_runs", "runs"):
+        return [it for it in items if "run_id" in it or id_key in it]
     return [it for it in items if it.get(id_key)]
 
 def parse_timestamp(value):
@@ -525,7 +600,7 @@ def select_latest_g5_run(runs: list):
     now_utc = datetime.now(timezone.utc)
     for r in runs:
         dt = parse_timestamp(r.get("recorded_at"))
-        if dt and (dt - now_utc).total_seconds() > 300:
+        if dt and (dt - now_utc).total_seconds() > 5:
             print("[BLOCKER] Future timestamp detected in recorded_at!")
             return None, "Future timestamp detected in recorded_at!"
     stamped = [(parse_timestamp(r.get("recorded_at")), idx, r) for idx, r in enumerate(runs)]
@@ -1154,64 +1229,86 @@ def verify_g5_g6_g7_ledgers(ws: Path, gate_stage: str, records: list) -> int:
             print(f"[BLOCKER] Fail-Closed: Missing {review_file} required for {gate_stage}!")
             return 1
         raw_content = review_file.read_text(encoding="utf-8", errors="ignore")
-        clean_lines = [re.sub(r"#.*$", "", l) for l in raw_content.splitlines()]
+        clean_content = strip_yaml_comments(raw_content)
 
         # V1.6.2 / 1.3: Flow-style YAML forbidden
-        for line in clean_lines:
+        for line in clean_content.splitlines():
             if "{" in line or "}" in line:
                 print(f"[BLOCKER] Flow-style YAML ('{{' or '}}') is forbidden in {review_file.name}!")
                 return errors + 1
 
-        content = "\n".join(clean_lines)
-
-        # V1.6.2 / 1.6: Check against comment-stripped content
-        if not re.search(r"source_code_hidden_verified:\s*true", content, re.IGNORECASE):
-            print(f"[BLOCKER] {gate_stage} violation: Missing 'source_code_hidden_verified: true' in {review_file.name}!")
+        # V1.6.3 / Top 2: Pure structured dict extraction (no regex across full YAML)
+        g5_runs = extract_yaml_items(clean_content, "g5_test_runs")
+        if not g5_runs:
+            print(f"[BLOCKER] {gate_stage} violation: Missing 'g5_test_runs' in {review_file.name}!")
             errors += 1
 
-        # A15 Fix: Resolve evidence_log_ref relative to repo_root (not arbitrary CWD)
-        ev_refs = re.findall(r"evidence_log_ref:\s*['\"]?([^'\"\n\r#]+)['\"]?", content)
-        if not ev_refs:
-            print(f"[BLOCKER] Missing 'evidence_log_ref' in {review_file.name}!")
-            errors += 1
+        freeze_records = [r for r in records if r.get("type") == "FREEZE"]
+        latest_freeze = freeze_records[-1] if freeze_records else {}
+        freeze_dt = parse_timestamp(latest_freeze.get("at")) if latest_freeze else None
+        now_utc = datetime.now(timezone.utc)
+
         try:
             repo_root_resolved = repo_root.resolve()
         except Exception:
             repo_root_resolved = repo_root
-        for ref in ev_refs:
-            ref_clean = ref.strip()
-            if ref_clean in ("/dev/null", "NUL", "null", "none", ""):
-                print(f"[BLOCKER] Invalid device/null test evidence path '{ref_clean}'!")
-                errors += 1
-                continue
-            ev_path = Path(ref_clean) if Path(ref_clean).is_absolute() else (repo_root / ref_clean)
-            # V1.6 / G5-02: evidence must live INSIDE the repository root (no absolute/`..` escapes).
-            try:
-                resolved_ev = ev_path.resolve()
-                resolved_ev.relative_to(repo_root_resolved)
-                inside_repo = True
-            except Exception:
-                inside_repo = False
-            if not inside_repo:
-                print(f"[BLOCKER] Evidence path '{ref_clean}' escapes the repository root (G5-02 violation)!")
-                errors += 1
-                continue
-            if not resolved_ev.exists() or not resolved_ev.is_file():
-                print(f"[BLOCKER] Missing test evidence file '{ref_clean}'!")
-                errors += 1
-            elif resolved_ev.stat().st_size == 0:
-                print(f"[BLOCKER] Test evidence file '{ref_clean}' is empty (0 bytes)!")
+
+        for run in g5_runs:
+            run_id = run.get("run_id", "UNKNOWN")
+
+            # 1. source_code_hidden_verified == "true" (1.6b/c)
+            if str(run.get("source_code_hidden_verified", "")).lower() != "true":
+                print(f"[BLOCKER] {gate_stage} violation: Missing 'source_code_hidden_verified: true' in {review_file.name}!")
                 errors += 1
 
+            # 2. evidence_log_ref
+            ref = run.get("evidence_log_ref", "")
+            if not ref:
+                print(f"[BLOCKER] Missing 'evidence_log_ref' for run '{run_id}' in {review_file.name}!")
+                errors += 1
+            else:
+                ref_clean = ref.strip()
+                if ref_clean in ("/dev/null", "NUL", "null", "none", ""):
+                    print(f"[BLOCKER] Invalid device/null test evidence path '{ref_clean}'!")
+                    errors += 1
+                else:
+                    ev_path = Path(ref_clean) if Path(ref_clean).is_absolute() else (repo_root / ref_clean)
+                    try:
+                        resolved_ev = ev_path.resolve()
+                        resolved_ev.relative_to(repo_root_resolved)
+                        inside_repo = True
+                    except Exception:
+                        inside_repo = False
+                    if not inside_repo:
+                        print(f"[BLOCKER] Evidence path '{ref_clean}' escapes the repository root (G5-02 violation)!")
+                        errors += 1
+                    elif not resolved_ev.exists() or not resolved_ev.is_file():
+                        print(f"[BLOCKER] Missing test evidence file '{ref_clean}'!")
+                        errors += 1
+                    elif resolved_ev.stat().st_size == 0:
+                        print(f"[BLOCKER] Test evidence file '{ref_clean}' is empty (0 bytes)!")
+                        errors += 1
+
+            # 3. recorded_at bounds (N5 upper bound +5s, N6 lower bound >= freeze_dt)
+            rec_str = run.get("recorded_at")
+            dt = parse_timestamp(rec_str)
+            if dt is None:
+                print(f"[BLOCKER] Run '{run_id}' has a missing or unparseable `recorded_at` in {review_file.name}!")
+                errors += 1
+            else:
+                if (dt - now_utc).total_seconds() > 5:
+                    print(f"[BLOCKER] Future timestamp detected in recorded_at!")
+                    errors += 1
+                if freeze_dt and dt < freeze_dt:
+                    print(f"[BLOCKER] Stale or back-dated timestamp in recorded_at! ({rec_str} is earlier than baseline frozen_at {latest_freeze.get('at')})")
+                    errors += 1
+
         # C-04 / D-8 + V1.6 G5-02: evaluate the exit_code of the CHRONOLOGICALLY LATEST run
-        # (selected by `recorded_at`), so back-filling an older passing run cannot mask a
-        # newer failing one. Falls back to document order for legacy runs without timestamps.
-        g5_runs = extract_yaml_items(content, "run_id")
         latest_run, run_error = select_latest_g5_run(g5_runs)
         if run_error:
             print(f"[BLOCKER] {run_error} in {review_file.name}!")
             errors += 1
-        else:
+        elif latest_run:
             raw_code = latest_run.get("exit_code")
             try:
                 code_val = int(str(raw_code).strip())
@@ -1230,7 +1327,7 @@ def verify_g5_g6_g7_ledgers(ws: Path, gate_stage: str, records: list) -> int:
             (r.get("bug_id"), r.get("qa_role"))
             for r in records if r.get("type") == "BUG_CLOSE"
         }
-        for bug in extract_all_defect_entries(content):
+        for bug in extract_all_defect_entries(clean_content):
             bug_id = bug.get("bug_id", "UNKNOWN")
             st_val = (bug.get("status") or bug.get("state") or bug.get("defect_status") or "").lower()
             if st_val not in CLOSED_DEFECT_STATUSES:
@@ -1279,6 +1376,20 @@ def verify_g5_g6_g7_ledgers(ws: Path, gate_stage: str, records: list) -> int:
             if re.search(r"\b(not-run|failed|blocked|not-covered|skipped|pending)\b", row, re.IGNORECASE):
                 print(f"[BLOCKER] Unverified or failed AC row in {rtm_file.name}: {row.strip()}")
                 errors += 1
+
+        # V1.6.3 / N3: Check RTM run_id against g5_test_runs
+        clean_review = strip_yaml_comments(review_file.read_text(encoding="utf-8", errors="ignore")) if review_file.exists() else ""
+        g5_all_runs = extract_yaml_items(clean_review, "g5_test_runs")
+        valid_passing_runs = {
+            r.get("run_id") for r in g5_all_runs
+            if str(r.get("exit_code", "")).strip() == "0"
+        }
+        for row in ac_rows:
+            row_runs = re.findall(r"\bRUN-[A-Za-z0-9_-]+\b", row)
+            for rid in row_runs:
+                if rid not in valid_passing_runs:
+                    print(f"[BLOCKER] RTM references non-existent or failed G5 run_id '{rid}' in {rtm_file.name}!")
+                    errors += 1
 
         missing_acs = frozen_ac_ids - rtm_ac_ids
         if missing_acs:
@@ -1330,7 +1441,29 @@ def has_pass_only_function(text: str, suffix: str) -> bool:
                 if cur_indent <= indent:
                     break
                 body.append(s)
-            if body == ["pass"] or body == ["..."]:
+            cleaned_body = []
+            in_docstring = False
+            docstring_delim = None
+            for stmt in body:
+                if not in_docstring and not cleaned_body:
+                    if stmt.startswith('"""') or stmt.startswith("'''"):
+                        delim = stmt[:3]
+                        if stmt.endswith(delim) and len(stmt) >= 6:
+                            continue
+                        else:
+                            in_docstring = True
+                            docstring_delim = delim
+                            continue
+                    elif (stmt.startswith('"') and stmt.endswith('"') and len(stmt) >= 2) or \
+                         (stmt.startswith("'") and stmt.endswith("'") and len(stmt) >= 2):
+                        continue
+                if in_docstring:
+                    if docstring_delim in stmt:
+                        in_docstring = False
+                        docstring_delim = None
+                    continue
+                cleaned_body.append(stmt)
+            if cleaned_body == ["pass"] or cleaned_body == ["..."]:
                 return True
     return False
 
@@ -1458,7 +1591,7 @@ def cmd_check(target_dir=".", require_approval=False, gate_stage="G4", key=None,
         digest_line = sha256_file(artifact) if artifact.exists() else "missing"
         print(f"[INFO] {label} current sha256 = {digest_line}")
 
-    # C-06 / A5 Fix + V1.6.1 / R08: case-insensitive stub scan & broader vacuous-assert scan
+    # C-06 / A5 Fix + V1.6.1 / R08 + V1.6.3 / 1.12: case-insensitive stub scan & broader vacuous-assert scan
     stub_re = re.compile(r"(?<![A-Za-z])(TODO|FIXME|XXX|HACK)(?![A-Za-z])", re.IGNORECASE)
     vacuous_assert_re = re.compile(
         r"(?:"
@@ -1466,9 +1599,12 @@ def cmd_check(target_dir=".", require_approval=False, gate_stage="G4", key=None,
         r"|^\s*assert\s+(?:True|1)\b"                              # assert True / assert 1
         r"|^\s*assert\s+(?!0\b)[0-9]+\s*(?:$|#)"                  # assert 2  (truthy constant)
         r"|assertTrue\s*\(\s*True\b"                               # assertTrue(True[, msg])
+        r"""|assertTrue\s*\(\s*(?P<g1>[A-Za-z0-9_'"]+)\s*==\s*(?P=g1)\s*\)"""    # assertTrue(1 == 1)
         r"|assertEqual\s*\(\s*1\s*,\s*1\s*\)"                     # assertEqual(1, 1)
+        r"|assertEqual\s*\(\s*len\([^)]*\)\s*,\s*len\([^)]*\)\s*\)" # assertEqual(len([]), len([]))
         r"|expect\s*\(\s*true\s*\)\.toBe\s*\(\s*true\s*\)"
-        r"|^\s*assert\s+([A-Za-z0-9_]+)\s*==\s*\1\b"               # assert x == x
+        r"|^\s*assert\s+(?P<g2>[A-Za-z0-9_]+)\s*==\s*(?P=g2)\b"    # assert x == x
+        r"|^\s*raise\s+NotImplementedError\b"                      # raise NotImplementedError
         r")"
     )
     errors = 0
@@ -1483,14 +1619,11 @@ def cmd_check(target_dir=".", require_approval=False, gate_stage="G4", key=None,
         sys.exit(1)
 
     self_path = Path(__file__).resolve()
-    exempt_paths = self_test_paths()
+    official_hashes = get_official_test_hashes()
 
     for root, _, files in os.walk(target_path):
-        rel = Path(root).relative_to(target_path) if Path(root) != target_path else None
-        rel_parts = rel.parts if rel else ()
-        if any(p in ALWAYS_SKIP_DIRS for p in rel_parts):
-            continue
-        if rel_parts and rel_parts[0] in ROOT_ONLY_SKIP_DIRS:
+        rel_parts = Path(root).relative_to(target_path).parts if Path(root) != target_path else ()
+        if any(p in SKIP_DIRS for p in rel_parts):
             continue
         for file in files:
             fpath = Path(root) / file
@@ -1498,11 +1631,17 @@ def cmd_check(target_dir=".", require_approval=False, gate_stage="G4", key=None,
                 fpath_resolved = fpath.resolve()
             except Exception:
                 fpath_resolved = fpath
-            # V1.6.1 / R04 Fix: exempt ONLY this tool's own conformance tests, matched by
-            # absolute path. A project's own `tests/` tree stays fully scanned (A6), and a
-            # renamed cheat file can no longer slip through on its basename.
-            if fpath_resolved == self_path or fpath_resolved in exempt_paths:
+            if fpath_resolved == self_path:
                 continue
+            # V1.6.3 / 1.13: only exempt conformance tests with official marker & matching sha256
+            if fpath.name in SELF_TEST_BASENAMES:
+                try:
+                    ftext = read_text_auto_encoding(fpath)
+                    first_line = ftext.splitlines()[0].strip() if ftext.splitlines() else ""
+                    if first_line == OFFICIAL_CONFORMANCE_MARKER and sha256_file(fpath) in official_hashes:
+                        continue
+                except Exception:
+                    pass
             if fpath.suffix.lower() not in CODE_EXTENSIONS:
                 continue
             scanned_files += 1

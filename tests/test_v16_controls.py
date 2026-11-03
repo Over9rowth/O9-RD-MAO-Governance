@@ -1,3 +1,4 @@
+# O9-RD-OFFICIAL-CONFORMANCE-TEST
 """V1.6 control-plane conformance tests.
 
 Every mechanism claimed as `tool-enforced` in docs/CONTROL-MATRIX.md is exercised
@@ -10,6 +11,8 @@ here against the real CLI, so the matrix cannot drift away from the implementati
   G5-03  order-independent YAML item parsing
 """
 import unittest
+import re
+import datetime
 import tempfile
 import subprocess
 import hashlib
@@ -72,10 +75,13 @@ class TestGateRunnerV16(unittest.TestCase):
         return (self.ws / "review_and_defects.yaml").read_text(encoding="utf-8")
 
     def make_g5_passable(self):
+        import datetime, re
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         rev_file = self.ws / "review_and_defects.yaml"
         content = rev_file.read_text(encoding="utf-8")
         content = content.replace("source_code_hidden_verified: false", "source_code_hidden_verified: true")
         content = content.replace("exit_code: -1", "exit_code: 0")
+        content = re.sub(r"""recorded_at:\s*["'][^"']*["']""", f'recorded_at: "{now_iso}"', content)
         rev_file.write_text(content, encoding="utf-8")
         ev_file = self.ws / "evidence" / "run-bb-001.log"
         ev_file.parent.mkdir(parents=True, exist_ok=True)
@@ -102,7 +108,7 @@ class TestGateRunnerV16(unittest.TestCase):
     def test_00_version_is_v16(self):
         res = self.run_cli("--version")
         self.assertEqual(res.returncode, 0)
-        self.assertEqual(res.stdout.strip(), "O9-RD-Next-V1.6.2")
+        self.assertEqual(res.stdout.strip(), "O9-RD-Next-V1.6.3")
 
     # ---------------- G1-01 ----------------
     def test_01_g1_01_blocks_empty_or_acless_spec(self):
@@ -292,15 +298,21 @@ class TestGateRunnerV16(unittest.TestCase):
         base = self.read_review()
         start = base.index("g5_test_runs:")
         end = base.index("defects:")
+        records = [json.loads(line) for line in (self.ws / "approvals.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+        freeze_rec = [r for r in records if r.get("type") == "FREEZE"][-1]
+        import datetime
+        f_dt = datetime.datetime.fromisoformat(freeze_rec["at"].replace("Z", "+00:00"))
+        t_old = (f_dt + datetime.timedelta(seconds=1)).isoformat()
+        t_mid = (f_dt + datetime.timedelta(seconds=2)).isoformat()
         two_runs = (
             "g5_test_runs:\n"
             "  - run_id: RUN-NEW-FAIL\n"
-            "    recorded_at: \"2026-11-02T12:00:00Z\"\n"
+            f"    recorded_at: \"{t_mid}\"\n"
             "    exit_code: 1\n"
             "    source_code_hidden_verified: true\n"
             "    evidence_log_ref: \"o9_workspace/evidence/run-bb-001.log\"\n"
             "  - run_id: RUN-OLD-PASS\n"
-            "    recorded_at: \"2026-11-01T00:00:00Z\"\n"
+            f"    recorded_at: \"{t_old}\"\n"
             "    exit_code: 0\n"
             "    source_code_hidden_verified: true\n"
             "    evidence_log_ref: \"o9_workspace/evidence/run-bb-001.log\"\n"
@@ -315,7 +327,7 @@ class TestGateRunnerV16(unittest.TestCase):
         self.assertIn("RUN-NEW-FAIL", res.stdout)
 
         # Flip the timestamps: the newest run now passes, so the gate opens.
-        flipped = two_runs.replace("2026-11-02T12:00:00Z", "2026-10-31T00:00:00Z")
+        flipped = two_runs.replace(t_mid, t_old).replace(f'run_id: RUN-OLD-PASS\n    recorded_at: "{t_old}"', f'run_id: RUN-OLD-PASS\n    recorded_at: "{t_mid}"')
         (self.ws / "review_and_defects.yaml").write_text(
             base[:start] + flipped + base[end:], encoding="utf-8"
         )
@@ -478,11 +490,11 @@ class TestGateRunnerV16(unittest.TestCase):
         self.assertNotEqual(res_g7.returncode, 0)
 
     def test_16_future_timestamp_detected_in_recorded_at(self):
-        """1.2: Future timestamp in recorded_at (> 300s) must be blocked."""
+        """1.2: Future timestamp in recorded_at (> 5s) must be blocked."""
         self.bootstrap()
         self.make_g5_passable()
         base = self.read_review()
-        futuristic = base.replace('"2026-11-03T00:00:00Z"', '"2099-12-31T23:59:59Z"')
+        futuristic = re.sub(r"""recorded_at:\s*["'][^"']*["']""", 'recorded_at: "2099-12-31T23:59:59Z"', base)
         (self.ws / "review_and_defects.yaml").write_text(futuristic, encoding="utf-8")
         res = self.run_cli("check", ".", "--gate=G5")
         self.assertNotEqual(res.returncode, 0)
@@ -622,6 +634,110 @@ class TestGateRunnerV16(unittest.TestCase):
         res = self.run_cli("freeze", "--force")
         self.assertEqual(res.returncode, 0)
         self.assertFalse(lock_dir.is_file())
+
+    def test_26_round6_top2_top3_fixes(self):
+        """Top 2 & Top 3 regression tests covering 1.6b/c, N2, N3, N6, 1.11b, 1.12, 1.13, 1.14b, 1.16."""
+        # 1. 1.6b/c: source_code_hidden_verified in command string cannot spoof the checker
+        self.bootstrap()
+        self.make_g5_passable()
+        rev_f = self.ws / "review_and_defects.yaml"
+        content = rev_f.read_text(encoding="utf-8")
+        spoofed = content.replace("source_code_hidden_verified: true", "source_code_hidden_verified: false")
+        spoofed = spoofed.replace('command_executed: "pytest tests/"', 'command_executed: "pytest ; source_code_hidden_verified: true"')
+        rev_f.write_text(spoofed, encoding="utf-8")
+        res = self.run_cli("check", ".", "--gate=G5")
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("Missing 'source_code_hidden_verified: true'", res.stdout)
+
+        # 2. N2: Quote-aware YAML comment stripper does not truncate '#' inside quotes
+        from gate_runner import strip_yaml_comments
+        stripped = strip_yaml_comments('command: "pytest -k \'login or #123\'" # this is a comment')
+        self.assertIn("#123", stripped)
+        self.assertNotIn("this is a comment", stripped)
+
+        # 3. N3: RTM referencing non-existent or failed run_id is blocked
+        self.make_g5_passable()
+        self.make_g6_passable()
+        rtm_f = self.ws / "rtm_acceptance.md"
+        rtm_txt = rtm_f.read_text(encoding="utf-8")
+        rtm_f.write_text(rtm_txt.replace("RUN-BB-001", "RUN-FAKE-999"), encoding="utf-8")
+        res_fake_run = self.run_cli("check", ".", "--gate=G6")
+        self.assertNotEqual(res_fake_run.returncode, 0)
+        self.assertIn("RTM references non-existent or failed G5 run_id 'RUN-FAKE-999'", res_fake_run.stdout)
+        rtm_f.write_text(rtm_txt, encoding="utf-8")
+
+        # 4. N6: recorded_at earlier than baseline freeze timestamp is blocked
+        rev_txt = rev_f.read_text(encoding="utf-8")
+        stale_rev = re.sub(r"""recorded_at:\s*["'][^"']*["']""", 'recorded_at: "2020-01-01T00:00:00Z"', rev_txt)
+        rev_f.write_text(stale_rev, encoding="utf-8")
+        res_stale = self.run_cli("check", ".", "--gate=G5")
+        self.assertNotEqual(res_stale.returncode, 0)
+        self.assertIn("Stale or back-dated timestamp in recorded_at!", res_stale.stdout)
+        rev_f.write_text(rev_txt, encoding="utf-8")
+
+        # 5. 1.11b: code under docs/ root is scanned
+        docs_dir = self.cwd / "docs"
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        docs_code = docs_dir / "prod_logic.py"
+        docs_code.write_text("# TODO: code in docs\n", encoding="utf-8")
+        res_docs = self.run_cli("check", ".")
+        self.assertNotEqual(res_docs.returncode, 0)
+        self.assertIn("ANTI-STUB BLOCKER", res_docs.stdout)
+        docs_code.unlink()
+
+        # 6. 1.12: new extensions and new vacuous asserts & pass-only docstrings
+        # 6a. .mjs extension
+        mjs_file = self.cwd / "component.mjs"
+        mjs_file.write_text("// TODO: js module\n", encoding="utf-8")
+        res_mjs = self.run_cli("check", ".")
+        self.assertNotEqual(res_mjs.returncode, 0)
+        self.assertIn("ANTI-STUB BLOCKER", res_mjs.stdout)
+        mjs_file.unlink()
+
+        # 6b. assertTrue(1 == 1)
+        test_py = self.cwd / "test_fake.py"
+        test_py.write_text("def test_it():\n    assertTrue(1 == 1)\n", encoding="utf-8")
+        res_assert = self.run_cli("check", ".")
+        self.assertNotEqual(res_assert.returncode, 0)
+        self.assertIn("FAKE-ASSERT BLOCKER", res_assert.stdout)
+
+        # 6c. raise NotImplementedError
+        test_py.write_text("def prod_func():\n    raise NotImplementedError\n", encoding="utf-8")
+        res_nie = self.run_cli("check", ".")
+        self.assertNotEqual(res_nie.returncode, 0)
+        self.assertIn("FAKE-ASSERT BLOCKER", res_nie.stdout)
+
+        # 6d. docstring-aware pass body
+        test_py.write_text('def empty_func():\n    """Docstring explanation"""\n    pass\n', encoding="utf-8")
+        res_pass = self.run_cli("check", ".")
+        self.assertNotEqual(res_pass.returncode, 0)
+        self.assertIn("Contains pass-only stub function body!", res_pass.stdout)
+        test_py.unlink()
+
+        # 7. 1.14b: readonly lock file handling
+        ws_abs = str(self.ws.resolve())
+        ws_id = hashlib.sha256(ws_abs.encode("utf-8")).hexdigest()[:16]
+        lock_dir = Path.home() / ".o9-trust" / "locks" / f"lock_{ws_id}"
+        lock_dir.parent.mkdir(parents=True, exist_ok=True)
+        lock_dir.write_text("readonly lock test\n", encoding="utf-8")
+        os.chmod(lock_dir, 0o444)
+        res_ro_lock = self.run_cli("freeze", "--force")
+        self.assertEqual(res_ro_lock.returncode, 0)
+
+        # 8. 1.16: directory replacing approvals.jsonl prints blocker without unhandled traceback
+        apr_log = self.ws / "approvals.jsonl"
+        if apr_log.exists():
+            try:
+                apr_log.chmod(0o666)
+            except Exception:
+                pass
+            apr_log.unlink()
+        apr_log.mkdir()
+        res_dir = self.run_cli("check", ".")
+        self.assertNotEqual(res_dir.returncode, 0)
+        self.assertIn("[BLOCKER] Expected regular file but found directory", res_dir.stdout)
+        self.assertNotIn("Traceback", res_dir.stderr)
+        apr_log.rmdir()
 
 if __name__ == "__main__":
     unittest.main()
