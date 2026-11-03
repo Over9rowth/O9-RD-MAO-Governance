@@ -1364,11 +1364,15 @@ def verify_g5_g6_g7_ledgers(ws: Path, gate_stage: str, records: list) -> int:
             errors += 1
         # V1.6.2 / 1.8 Fix: Extract all frozen AC-xxx from spec_and_contracts.md and verify 100% coverage
         frozen_ac_ids = set()
+        manual_ac_ids = set()
         spec_file = ws / BASELINE_SPEC_FILE
         if spec_file.exists():
             for line in spec_file.read_text(encoding="utf-8", errors="ignore").splitlines():
                 if line.strip().startswith("|"):
-                    frozen_ac_ids.update(re.findall(r"\bAC-\d+\b", line))
+                    found = re.findall(r"\bAC-\d+\b", line)
+                    frozen_ac_ids.update(found)
+                    if re.search(r"\bmanual\b", line, re.IGNORECASE):
+                        manual_ac_ids.update(found)
 
         clean_review = strip_yaml_comments(review_file.read_text(encoding="utf-8", errors="ignore")) if review_file.exists() else ""
         g5_all_runs = extract_yaml_items(clean_review, "g5_test_runs")
@@ -1388,6 +1392,11 @@ def verify_g5_g6_g7_ledgers(ws: Path, gate_stage: str, records: list) -> int:
                 if not (re.search(r"\bno-run-required\b", row, re.IGNORECASE) and re.search(r"\bmanual\b", row, re.IGNORECASE)):
                     print(f"[BLOCKER] N3b Violation: AC row in {rtm_file.name} does not reference any 'RUN-xxx' evidence ID: {row.strip()}")
                     errors += 1
+                else:
+                    row_acs = set(re.findall(r"\bAC-\d+\b", row))
+                    if not row_acs.issubset(manual_ac_ids):
+                        print(f"[BLOCKER] N3c Violation: AC is declared 'automated' in frozen spec, cannot use 'no-run-required' manual exemption in RTM! {row.strip()}")
+                        errors += 1
             for r_id in row_runs:
                 if r_id not in valid_passing_runs:
                     print(f"[BLOCKER] RTM references non-existent or failed G5 run_id '{r_id}' in {rtm_file.name}!")

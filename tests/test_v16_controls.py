@@ -746,9 +746,12 @@ class TestGateRunnerV16(unittest.TestCase):
         self.make_g6_passable()
         self.make_g7_passable()
 
-        now_sec = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         res_frz = self.run_cli("freeze", "--force")
         self.assertEqual(res_frz.returncode, 0)
+
+        records = [json.loads(l) for l in (self.ws / "approvals.jsonl").read_text(encoding="utf-8").splitlines()]
+        freeze_rec = [r for r in records if r.get("type") == "FREEZE"][-1]
+        now_sec = freeze_rec["at"][:19] + "Z"
 
         rev_f = self.ws / "review_and_defects.yaml"
         rev_txt = rev_f.read_text(encoding="utf-8")
@@ -793,6 +796,14 @@ class BaseEngine(abc.ABC):
         res_n3b = self.run_cli("check", ".", "--gate=G6")
         self.assertNotEqual(res_n3b.returncode, 0)
         self.assertIn("N3b Violation", res_n3b.stdout)
+        rtm_f.write_text(rtm_orig, encoding="utf-8")
+
+        # 4. N3c: AC declared 'automated' in frozen spec cannot use manual 'no-run-required' exemption in RTM
+        rtm_manual_spoof = rtm_orig.replace("RUN-BB-001", "no-run-required | manual")
+        rtm_f.write_text(rtm_manual_spoof, encoding="utf-8")
+        res_n3c = self.run_cli("check", ".", "--gate=G6")
+        self.assertNotEqual(res_n3c.returncode, 0)
+        self.assertIn("N3c Violation", res_n3c.stdout)
         rtm_f.write_text(rtm_orig, encoding="utf-8")
 
 if __name__ == "__main__":
