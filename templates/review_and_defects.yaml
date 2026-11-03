@@ -27,6 +27,7 @@ mock_and_stub_inventory:
 # 3. G5 Independent QA Runs (Black-Box First Iron Law)
 g5_test_runs:
   - run_id: RUN-BB-001
+    recorded_at: "2026-11-03T00:00:00Z"
     phase_type: "black-box-first"
     tester_session: "QA-SESSION-01"
     source_code_hidden_verified: true
