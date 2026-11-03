@@ -10,7 +10,7 @@ from pathlib import Path
 RUNNER = str(Path(__file__).resolve().parent.parent / "gate_runner.py")
 TEST_SECRET = {"O9_APPROVAL_SECRET": "UNITTEST-HUMAN-SECRET-KEY-2026"}
 
-class TestGateRunnerV13(unittest.TestCase):
+class TestGateRunnerV14(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.cwd = Path(self.tmp.name)
@@ -18,13 +18,17 @@ class TestGateRunnerV13(unittest.TestCase):
     def tearDown(self):
         apr_log = self.cwd / "o9_workspace" / "approvals.jsonl"
         if apr_log.exists():
-            os.chmod(apr_log, 0o666)
+            try:
+                os.chmod(apr_log, 0o666)
+            except Exception:
+                pass
         self.tmp.cleanup()
 
     def run_cli(self, *args, env_override=TEST_SECRET, unset_secret=False):
         env = os.environ.copy()
         if unset_secret:
             env.pop("O9_APPROVAL_SECRET", None)
+            env.pop("O9_EXPECTED_KEY_FP", None)
         elif env_override:
             env.update(env_override)
         return subprocess.run(
@@ -77,7 +81,8 @@ class TestGateRunnerV13(unittest.TestCase):
         self.assertNotEqual(res_bad.returncode, 0)
         self.assertIn("unauthorized identity", res_bad.stdout)
 
-        # 独立 QA (qa_lead) 关闭 Bug -> 允许通过
+        # 独立 QA (qa_lead) 使用 close-bug 签名后关闭 Bug -> 允许通过
+        self.run_cli("close-bug", "BUG-1", "qa_lead")
         good_bug = "defects:\n  - bug_id: BUG-1\n    status: closed\n    closed_by_tester: qa_lead\n"
         review_file.write_text(base_txt.replace("defects: []", good_bug), encoding="utf-8")
         res_good = self.run_cli("check", ".", "--gate=G5")
@@ -130,6 +135,53 @@ class TestGateRunnerV13(unittest.TestCase):
         # 非法参数阻断
         self.assertNotEqual(self.run_cli("check", ".", "--gate=G9").returncode, 0)
         self.assertNotEqual(self.run_cli("approve", "--force").returncode, 0)
+
+    def test_7_s3_block_unauthenticated_yaml_bug_close_and_verify_signed_close(self):
+        """S3: 拦截未经 close-bug 签名绑定的手写 YAML 关单，经签名后方可放行"""
+        self.run_cli("init")
+        self.run_cli("freeze")
+        self.run_cli("approve", "station_master")
+
+        review_file = self.cwd / "o9_workspace" / "review_and_defects.yaml"
+        base_txt = review_file.read_text(encoding="utf-8")
+
+        # 场景 A: AI 在 YAML 中自称 closed，但未在 approvals.jsonl 中进行 BUG_CLOSE 签名
+        unverified_bug = "defects:\n  - bug_id: BUG-101\n    status: closed\n    closed_by_tester: qa_lead\n"
+        review_file.write_text(base_txt.replace("defects: []", unverified_bug), encoding="utf-8")
+
+        res_unauth = self.run_cli("check", ".", "--gate=G5")
+        self.assertNotEqual(res_unauth.returncode, 0)
+        self.assertIn("NO cryptographic BUG_CLOSE signature", res_unauth.stdout)
+
+        # 场景 B: 运行 close-bug 写入加密签名记录后，再次校验应顺利通过
+        res_close = self.run_cli("close-bug", "BUG-101", "qa_lead")
+        self.assertEqual(res_close.returncode, 0)
+        self.assertIn("Cryptographically signed closure", res_close.stdout)
+
+        res_ok = self.run_cli("check", ".", "--gate=G5")
+        self.assertEqual(res_ok.returncode, 0)
+
+    def test_8_s1_block_ai_self_invented_secret_via_pinned_key_fingerprint(self):
+        """S1: 外部锚点钉死密钥指纹后，AI 试图使用自造假密钥重签或核验必须被当场阻断"""
+        human_secret = {"O9_APPROVAL_SECRET": "HUMAN-PINNED-SECRET-987654"}
+        ai_secret = {"O9_APPROVAL_SECRET": "AI-SELF-INVENTED-SECRET-FAKE"}
+
+        self.run_cli("init", env_override=human_secret)
+        self.run_cli("freeze", env_override=human_secret)
+
+        # AI 尝试使用自造假密钥执行 check -> 必须被指纹钉死拦截
+        res_ai_chk = self.run_cli("check", ".", env_override=ai_secret)
+        self.assertNotEqual(res_ai_chk.returncode, 0)
+        self.assertIn("Signing key fingerprint mismatch", res_ai_chk.stdout)
+
+        # AI 尝试使用自造假密钥执行 freeze --force -> 同样必须被当场拦截
+        res_ai_frz = self.run_cli("freeze", "--force", env_override=ai_secret)
+        self.assertNotEqual(res_ai_frz.returncode, 0)
+        self.assertIn("Signing key fingerprint mismatch", res_ai_frz.stdout)
+
+        # 人类使用原密钥核验 -> 正常通过
+        res_human_chk = self.run_cli("check", ".", env_override=human_secret)
+        self.assertEqual(res_human_chk.returncode, 0)
 
 if __name__ == "__main__":
     unittest.main()

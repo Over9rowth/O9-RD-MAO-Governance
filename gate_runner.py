@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-O9-RD Verifiable Minimal Control Plane CLI (gate_runner.py v1.3)
+O9-RD Verifiable Minimal Control Plane CLI (gate_runner.py v1.4)
 Enforces:
 - Zero hardcoded default secrets (Fail-Closed when O9_APPROVAL_SECRET / --key is absent)
-- Unconditional HMAC-SHA256 verification on both FREEZE and APPROVAL records
-- Hash-chained append-only approvals.jsonl + external anchor (~/.o9-trust/ & git tag)
+- Unconditional HMAC-SHA256 verification on FREEZE, APPROVAL, and BUG_CLOSE records
+- S1 Key-Fingerprint Pinning (~/.o9-trust/ anchor pins key_fp, blocks AI self-invented secret)
+- S3 Cryptographic Bug Closure Binding (close-bug command + mandatory BUG_CLOSE record in approvals.jsonl)
+- Hash-chained append-only approvals.jsonl + external anchor
 - G4 Anti-Stubbing & Vacuous Assertion scan (including .ipynb, using Path.parts)
 - G5/G6/G7 Fail-Closed verification:
   * Black-box-first flag verification
   * Real, non-empty evidence_log_ref file verification (blocks /dev/null & missing logs)
-  * Defect status whitelist + Independent QA closer identity verification (blocks self-closed bugs)
+  * Defect status whitelist + Independent QA closer identity & BUG_CLOSE HMAC signature verification
   * G7 all 3 decoupled decisions verification (Sign-Off, Release Authorization, License)
 """
 import sys
@@ -46,7 +48,7 @@ SKIP_DIRS = {".git", "o9_workspace", "docs", "prompts", "templates", "tests", "_
 
 DEFAULT_STATE_JSON = {
     "project_id": "PRJ-2026-001",
-    "sop_version": "O9-RD-Next-V1.3",
+    "sop_version": "O9-RD-Next-V1.4",
     "route": "M",
     "state": {"phase": "G0", "execution_state": "active", "gate_results": {}},
     "active_baseline": {"baseline_id": None, "parent_baseline_id": None, "spec_sha256": None, "frozen_at": None},
@@ -106,6 +108,10 @@ def sha256_file(filepath: Path) -> str:
 def compute_hmac(secret: str, payload: str) -> str:
     return hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
+def compute_key_fp(secret: str) -> str:
+    """Non-reversible public key fingerprint for S1 pinning."""
+    return hashlib.sha256(f"O9-KEY-FP-V1:{secret}".encode("utf-8")).hexdigest()[:24]
+
 def require_signing_secret(explicit_key: str = None) -> str:
     """Fail-Closed: Refuses to fall back to any hardcoded key."""
     secret = explicit_key or os.environ.get("O9_APPROVAL_SECRET")
@@ -134,11 +140,12 @@ def sync_external_anchor(secret: str):
         return
     ledger_hash = sha256_file(APPROVALS_LOG)
     anchor_mac = compute_hmac(secret, f"ANCHOR:{ledger_hash}")
+    key_fp = compute_key_fp(secret)
     anchor_file = get_external_anchor_path()
     try:
         if anchor_file.exists():
             set_writable(anchor_file)
-        anchor_file.write_text(f"{ledger_hash}:{anchor_mac}\n", encoding="utf-8")
+        anchor_file.write_text(f"{ledger_hash}:{anchor_mac}:{key_fp}\n", encoding="utf-8")
         set_readonly(anchor_file)
     except Exception:
         pass
@@ -149,10 +156,20 @@ def verify_external_anchor(secret: str):
         return
     try:
         raw = anchor_file.read_text(encoding="utf-8").strip()
-        expected_ledger_hash, expected_mac = raw.split(":", 1)
+        parts = raw.split(":")
+        expected_ledger_hash = parts[0]
+        expected_mac = parts[1]
+        pinned_key_fp = parts[2] if len(parts) > 2 else None
     except Exception:
         print("[BLOCKER] External trust anchor corrupted!")
         sys.exit(1)
+
+    # S1 Pinning check: If key_fp was pinned, current secret must have the exact same fingerprint
+    current_key_fp = compute_key_fp(secret)
+    if pinned_key_fp and current_key_fp != pinned_key_fp:
+        print("[BLOCKER] Signing key fingerprint mismatch against pinned trust root!")
+        sys.exit(1)
+
     actual_ledger_hash = sha256_file(APPROVALS_LOG)
     if actual_ledger_hash != expected_ledger_hash:
         print("[BLOCKER] Ledger Tampering Detected! approvals.jsonl diverges from external trust anchor (~/.o9-trust/)!")
@@ -233,7 +250,6 @@ def cmd_init():
     if not APPROVALS_LOG.exists():
         APPROVALS_LOG.write_text("", encoding="utf-8")
         set_readonly(APPROVALS_LOG)
-    # Remove any stale external anchor when initializing a fresh empty ledger
     anchor_file = get_external_anchor_path()
     if APPROVALS_LOG.stat().st_size == 0 and anchor_file.exists():
         try:
@@ -246,7 +262,7 @@ def cmd_init():
     state.setdefault("audit_events", []).append({"at": now_iso(), "action": "init_workspace"})
     save_state(state)
     if not os.environ.get("O9_APPROVAL_SECRET"):
-        print("[NOTICE] O9_APPROVAL_SECRET is not set yet. You must set O9_APPROVAL_SECRET (or pass --key=SECRET) before running freeze/approve/check.")
+        print("[NOTICE] O9_APPROVAL_SECRET is not set yet. You must set O9_APPROVAL_SECRET (or pass --key=SECRET) before running freeze/approve/close-bug/check.")
     print(f"[OK] Initialized O9-RD workspace in ./{WORKSPACE}/")
 
 def verify_full_ledger_chain(records: list, secret: str):
@@ -262,6 +278,8 @@ def verify_full_ledger_chain(records: list, secret: str):
             payload = f"FREEZE:{rec.get('baseline_id')}:{rec.get('spec_sha256')}:{prev_hmac}"
         elif rtype == "APPROVAL":
             payload = f"APPROVAL:{rec.get('approval_id')}:{rec.get('gate')}:{rec.get('approver')}:{rec.get('bound_baseline_id')}:{rec.get('bound_spec_sha256')}:{prev_hmac}"
+        elif rtype == "BUG_CLOSE":
+            payload = f"BUG_CLOSE:{rec.get('bug_id')}:{rec.get('closer')}:{rec.get('bound_baseline_id')}:{prev_hmac}"
         else:
             print(f"[BLOCKER] Unknown record type '{rtype}' in approvals.jsonl!")
             sys.exit(1)
@@ -317,7 +335,7 @@ def cmd_freeze(force=False, key=None):
     }
     state.setdefault("state", {})["phase"] = "G3"
     save_state(state)
-    print(f"[G3 FROZEN] {new_id} recorded & anchored -> SHA-256: {digest}")
+    print(f"[G3 FROZEN] {new_id} recorded & anchored -> SHA-256: {digest} (Key-FP: {compute_key_fp(secret)[:8]}...)")
 
 def cmd_approve(approver="station_master", gate="G3", key=None):
     if approver.startswith("-"):
@@ -376,7 +394,48 @@ def cmd_approve(approver="station_master", gate="G3", key=None):
     save_state(state)
     print(f"[{gate} APPROVED] Detached HMAC signature {apr_id} by '{approver}' bound to {bl_id} ({digest[:12]}...)")
 
-def verify_g5_g6_g7_ledgers(gate_stage: str) -> int:
+def cmd_close_bug(bug_id: str, qa_role: str = "qa_lead", key=None):
+    """S3: Cryptographically signs a bug closure into append-only approvals.jsonl."""
+    if not bug_id or bug_id.startswith("-"):
+        print("[BLOCKED] Missing or invalid bug_id for close-bug.")
+        sys.exit(1)
+    if qa_role not in VALID_QA_CLOSERS:
+        print(f"[BLOCKED] Unauthorized QA closer role '{qa_role}'. Allowed roles: {sorted(VALID_QA_CLOSERS)}")
+        sys.exit(1)
+
+    secret = require_signing_secret(key)
+    verify_external_anchor(secret)
+    records = read_ledger_records()
+    if not records:
+        print("[BLOCKED] Cannot close bug: No frozen baseline in approvals.jsonl. Run 'freeze' first.")
+        sys.exit(1)
+    verify_full_ledger_chain(records, secret)
+
+    freeze_records = [r for r in records if r.get("type") == "FREEZE"]
+    if not freeze_records:
+        print("[BLOCKED] Cannot close bug: No FREEZE record found in approvals.jsonl.")
+        sys.exit(1)
+    latest_freeze = freeze_records[-1]
+    bl_id = latest_freeze["baseline_id"]
+
+    prev_hmac = records[-1]["hmac"]
+    ts = now_iso()
+    payload = f"BUG_CLOSE:{bug_id}:{qa_role}:{bl_id}:{prev_hmac}"
+    mac = compute_hmac(secret, payload)
+
+    append_ledger_record({
+        "type": "BUG_CLOSE",
+        "bug_id": bug_id,
+        "closer": qa_role,
+        "bound_baseline_id": bl_id,
+        "prev_hmac": prev_hmac,
+        "closed_at": ts,
+        "hmac": mac
+    }, secret)
+
+    print(f"[BUG CLOSED] Cryptographically signed closure for '{bug_id}' by '{qa_role}' bound to {bl_id}")
+
+def verify_g5_g6_g7_ledgers(gate_stage: str, records: list) -> int:
     errors = 0
     if gate_stage in ("G5", "G6", "G7"):
         if not REVIEW_FILE.exists():
@@ -409,7 +468,7 @@ def verify_g5_g6_g7_ledgers(gate_stage: str) -> int:
             print(f"[BLOCKER] Non-zero or missing test exit_code in {REVIEW_FILE}!")
             errors += 1
 
-        # 3. R4 Fix: Whitelist defect status AND verify independent QA closer identity (blocks self-closed bugs)
+        # 3. R4 & S3 Fix: Whitelist defect status + QA closer identity + Cryptographic BUG_CLOSE signature check
         in_defects = False
         current_bug = None
         for raw_line in content.splitlines():
@@ -418,7 +477,7 @@ def verify_g5_g6_g7_ledgers(gate_stage: str) -> int:
                 continue
             if re.match(r"^[a-zA-Z0-9_]+:", raw_line) and not raw_line.startswith(" "):
                 if in_defects and current_bug:
-                    errors += _validate_defect_entry(current_bug)
+                    errors += _validate_defect_entry(current_bug, records)
                     current_bug = None
                 in_defects = line.startswith("defects:")
                 if in_defects and line.endswith("[]"):
@@ -427,14 +486,14 @@ def verify_g5_g6_g7_ledgers(gate_stage: str) -> int:
             if in_defects:
                 if line.startswith("-"):
                     if current_bug:
-                        errors += _validate_defect_entry(current_bug)
+                        errors += _validate_defect_entry(current_bug, records)
                     current_bug = {}
                     line = line[1:].strip()
                 if current_bug is not None and ":" in line:
                     k, v = line.split(":", 1)
                     current_bug[k.strip().lower()] = v.strip().strip("'\"")
         if in_defects and current_bug:
-            errors += _validate_defect_entry(current_bug)
+            errors += _validate_defect_entry(current_bug, records)
 
     if gate_stage in ("G6", "G7"):
         if not RTM_FILE.exists():
@@ -448,7 +507,6 @@ def verify_g5_g6_g7_ledgers(gate_stage: str) -> int:
             print(f"[BLOCKER] {RTM_FILE} contains no valid AC traceability rows!")
             errors += 1
 
-    # Suggestion 7 Fix: Verify all 3 decoupled G7 decisions
     if gate_stage == "G7":
         rtm_text = RTM_FILE.read_text(encoding="utf-8", errors="ignore")
         if not re.search(r"Decision 1 \(Sign-Off\)\*\*:\s*`?approved`?", rtm_text, re.IGNORECASE):
@@ -463,7 +521,7 @@ def verify_g5_g6_g7_ledgers(gate_stage: str) -> int:
 
     return errors
 
-def _validate_defect_entry(bug: dict) -> int:
+def _validate_defect_entry(bug: dict, records: list) -> int:
     errs = 0
     bug_id = bug.get("bug_id", "UNKNOWN")
     st_val = (bug.get("status") or bug.get("state") or bug.get("defect_status") or "").lower()
@@ -474,15 +532,33 @@ def _validate_defect_entry(bug: dict) -> int:
     if closer not in VALID_QA_CLOSERS:
         print(f"[BLOCKER] Defect '{bug_id}' closed by unauthorized identity '{closer}'! Only independent QA ({sorted(VALID_QA_CLOSERS)}) can close bugs.")
         errs += 1
+
+    # S3 Fix: Verify cryptographic BUG_CLOSE signature in approvals.jsonl
+    signed_closes = [
+        r for r in records
+        if r.get("type") == "BUG_CLOSE" and r.get("bug_id") == bug_id and r.get("closer") == closer
+    ]
+    if not signed_closes:
+        print(f"[BLOCKER] S3 Violation: Defect '{bug_id}' claims closed by '{closer}' in YAML, but has NO cryptographic BUG_CLOSE signature in approvals.jsonl!")
+        errs += 1
+
     return errs
 
-def cmd_check(target_dir=".", require_approval=False, gate_stage="G4", key=None):
+def cmd_check(target_dir=".", require_approval=False, gate_stage="G4", key=None, expect_key_fp=None):
     if gate_stage not in VALID_GATES:
         print(f"[BLOCKED] Invalid --gate={gate_stage}. Allowed values: {sorted(VALID_GATES)}")
         sys.exit(1)
 
-    # R1 & R2 Fix: Unconditionally require signing secret and verify full hash chain
     secret = require_signing_secret(key)
+
+    # S1 Pinning check from --expect-key-fp or O9_EXPECTED_KEY_FP
+    expected_fp = expect_key_fp or os.environ.get("O9_EXPECTED_KEY_FP")
+    if expected_fp:
+        actual_fp = compute_key_fp(secret)
+        if actual_fp != expected_fp:
+            print(f"[BLOCKER] Signing key fingerprint mismatch! Expected: {expected_fp}, Actual: {actual_fp}")
+            sys.exit(1)
+
     state = load_state()
     if not SPEC_FILE.exists():
         print(f"[BLOCKED] Missing {SPEC_FILE}.")
@@ -551,7 +627,7 @@ def cmd_check(target_dir=".", require_approval=False, gate_stage="G4", key=None)
                         print(f"[FAKE-ASSERT BLOCKER] {fpath}:{i} -> {line.strip()}")
                         errors += 1
 
-    errors += verify_g5_g6_g7_ledgers(gate_stage)
+    errors += verify_g5_g6_g7_ledgers(gate_stage, records)
 
     if errors > 0:
         print(f"[FAILED] Gate {gate_stage} check blocked with {errors} issue(s) across {scanned_files} scanned file(s).")
@@ -586,15 +662,33 @@ if __name__ == "__main__":
         approver = pos[0] if pos else "station_master"
         gate = parse_kv_flag(args[1:], "--gate=") or "G3"
         cmd_approve(approver=approver, gate=gate, key=key_arg)
+    elif cmd == "close-bug":
+        pos = [a for a in args[1:] if not a.startswith("-")]
+        bad_flags = [a for a in args[1:] if a.startswith("-") and not a.startswith("--key=")]
+        if bad_flags:
+            print(f"[BLOCKED] Invalid flag(s) for close-bug: {bad_flags}")
+            sys.exit(1)
+        if not pos:
+            print("[BLOCKED] Usage: python gate_runner.py close-bug <BUG_ID> [qa_role] [--key=SECRET]")
+            sys.exit(1)
+        bug_id = pos[0]
+        qa_role = pos[1] if len(pos) > 1 else "qa_lead"
+        cmd_close_bug(bug_id=bug_id, qa_role=qa_role, key=key_arg)
     elif cmd == "check":
         pos = [a for a in args[1:] if not a.startswith("-")]
-        bad_flags = [a for a in args[1:] if a.startswith("-") and a != "--require-approval" and not a.startswith("--gate=") and not a.startswith("--key=")]
+        bad_flags = [
+            a for a in args[1:]
+            if a.startswith("-") and a != "--require-approval"
+            and not a.startswith("--gate=") and not a.startswith("--key=")
+            and not a.startswith("--expect-key-fp=")
+        ]
         if bad_flags:
             print(f"[BLOCKED] Invalid flag(s) for check: {bad_flags}")
             sys.exit(1)
         target = pos[0] if pos else "."
         req_apr = "--require-approval" in args[1:]
         stage = parse_kv_flag(args[1:], "--gate=") or "G4"
-        cmd_check(target, require_approval=req_apr, gate_stage=stage, key=key_arg)
+        expect_fp = parse_kv_flag(args[1:], "--expect-key-fp=")
+        cmd_check(target, require_approval=req_apr, gate_stage=stage, key=key_arg, expect_key_fp=expect_fp)
     else:
-        print("Usage: python gate_runner.py [init | freeze [--force] [--key=SECRET] | approve [role] [--gate=G3] [--key=SECRET] | check [dir] [--require-approval] [--gate=G4|G5|G6|G7] [--key=SECRET]]")
+        print("Usage: python gate_runner.py [init | freeze [--force] [--key=SECRET] | approve [role] [--gate=G3] [--key=SECRET] | close-bug <BUG_ID> [qa_role] [--key=SECRET] | check [dir] [--require-approval] [--gate=G4|G5|G6|G7] [--expect-key-fp=FP] [--key=SECRET]]")
