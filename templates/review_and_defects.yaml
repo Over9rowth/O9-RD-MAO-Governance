@@ -33,7 +33,7 @@ g5_test_runs:
     candidate_id: "CAND-001"
     command_executed: "pytest tests/"
     exit_code: 0
-    evidence_log_ref: "tests/evidence/run-bb-001.log"
+    evidence_log_ref: "o9_workspace/evidence/run-bb-001.log"
 
 # 4. Defects Ledger (Allowed closed statuses: closed, verified, rejected)
 defects: []

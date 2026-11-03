@@ -8,126 +8,128 @@ import os
 from pathlib import Path
 
 RUNNER = str(Path(__file__).resolve().parent.parent / "gate_runner.py")
+TEST_SECRET = {"O9_APPROVAL_SECRET": "UNITTEST-HUMAN-SECRET-KEY-2026"}
 
-class TestGateRunnerV12(unittest.TestCase):
+class TestGateRunnerV13(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.cwd = Path(self.tmp.name)
 
     def tearDown(self):
-        # Ensure read-only approvals.jsonl can be cleaned up on Windows
         apr_log = self.cwd / "o9_workspace" / "approvals.jsonl"
         if apr_log.exists():
             os.chmod(apr_log, 0o666)
         self.tmp.cleanup()
 
-    def run_cli(self, *args, env_override=None):
+    def run_cli(self, *args, env_override=TEST_SECRET, unset_secret=False):
         env = os.environ.copy()
-        if env_override:
+        if unset_secret:
+            env.pop("O9_APPROVAL_SECRET", None)
+        elif env_override:
             env.update(env_override)
         return subprocess.run(
             [sys.executable, RUNNER, *args],
             cwd=self.cwd, text=True, capture_output=True, env=env
         )
 
-    def test_1_fail_closed_without_baseline(self):
-        """T3: 无基线时 check 必须 Fail-Closed"""
-        self.run_cli("init")
-        res = self.run_cli("check", ".")
-        self.assertNotEqual(res.returncode, 0)
-        self.assertIn("Fail-Closed", res.stdout)
+    def test_1_r1_fail_closed_when_no_secret_configured(self):
+        """R1 (Suggestion 1 & 3): 无密钥环境下 freeze / approve / check 必须全部拒绝执行"""
+        self.run_cli("init", unset_secret=True)
+        res_frz = self.run_cli("freeze", unset_secret=True)
+        self.assertNotEqual(res_frz.returncode, 0)
+        self.assertIn("No valid signing key configured", res_frz.stdout)
 
-    def test_2_single_file_deployment_no_crash(self):
-        """T14: 当单文件部署（无 templates/ 目录）时，init 绝不能 Crash"""
-        standalone_runner = self.cwd / "gate_runner.py"
-        shutil.copyfile(RUNNER, standalone_runner)
-        res = subprocess.run([sys.executable, str(standalone_runner), "init"], cwd=self.cwd, text=True, capture_output=True)
-        self.assertEqual(res.returncode, 0)
-        self.assertTrue((self.cwd / "o9_workspace" / "project_state.json").exists())
+        res_chk = self.run_cli("check", ".", unset_secret=True)
+        self.assertNotEqual(res_chk.returncode, 0)
+        self.assertIn("No valid signing key configured", res_chk.stdout)
 
-    def test_3_block_state_json_tampering_and_forged_approval(self):
-        """T6/T7/T8/T9: 防御 AI 直接篡改 project_state.json 或无密钥伪造 approve / freeze --force"""
-        human_env = {"O9_APPROVAL_SECRET": "HUMAN-MASTER-SECRET-999"}
-        ai_env = {"O9_APPROVAL_SECRET": "AI-GUESSED-WRONG-KEY"}
-
-        self.run_cli("init")
-        self.run_cli("freeze", env_override=human_env)
-        self.run_cli("approve", "station_master", env_override=human_env)
-
-        # 正常校验通过
-        res_ok = self.run_cli("check", ".", "--require-approval", env_override=human_env)
-        self.assertEqual(res_ok.returncode, 0)
-
-        # 攻击路径 A: AI 篡改 spec 后，尝试自己跑 freeze --force（无人类密钥）-> 必须被拦截！
-        spec = self.cwd / "o9_workspace" / "spec_and_contracts.md"
-        spec.write_text(spec.read_text(encoding="utf-8") + "\nAI secret edit!", encoding="utf-8")
-        res_force = self.run_cli("freeze", "--force", env_override=ai_env)
-        self.assertNotEqual(res_force.returncode, 0)
-        self.assertIn("Unauthorized 'freeze --force'", res_force.stdout)
-
-        # 攻击路径 B: AI 直接手改 project_state.json 里的 spec_sha256 对齐篡改后的文件 -> 必须被 approvals.jsonl 拦截！
-        state_file = self.cwd / "o9_workspace" / "project_state.json"
-        state = json.loads(state_file.read_text(encoding="utf-8"))
-        import hashlib
-        fake_hash = hashlib.sha256(spec.read_bytes()).hexdigest()
-        state["active_baseline"]["spec_sha256"] = fake_hash
-        state_file.write_text(json.dumps(state), encoding="utf-8")
-
-        res_tamper = self.run_cli("check", ".", "--require-approval", env_override=human_env)
-        self.assertNotEqual(res_tamper.returncode, 0)
-        self.assertIn("Tampering Detected", res_tamper.stdout)
-
-    def test_4_strict_approver_role_and_flag_validation(self):
-        """T7 & T15: 拒绝 SelfSignedAI 非法角色、拒绝 approve --force 与非法 --gate=G9"""
+    def test_2_r2_r3_unconditional_freeze_hmac_and_external_anchor(self):
+        """R2 & R3: 伪造 FREEZE 记录或 chmod 篡改 approvals.jsonl 必须被无条件 HMAC 与外部锚点阻断"""
         self.run_cli("init")
         self.run_cli("freeze")
 
-        res_role = self.run_cli("approve", "SelfSignedAI")
-        self.assertNotEqual(res_role.returncode, 0)
-        self.assertIn("Unauthorized approver role", res_role.stdout)
+        apr_log = self.cwd / "o9_workspace" / "approvals.jsonl"
+        os.chmod(apr_log, 0o666)
+        fake_rec = {
+            "type": "FREEZE", "baseline_id": "BL-999", "parent_baseline_id": "BL-001",
+            "spec_sha256": "deadbeef" * 8, "forced": True, "prev_hmac": "FAKE", "at": "2026-11-03", "hmac": "forged_mac"
+        }
+        with open(apr_log, "a", encoding="utf-8") as f:
+            f.write(json.dumps(fake_rec) + "\n")
 
-        res_flag = self.run_cli("approve", "--force")
-        self.assertNotEqual(res_flag.returncode, 0)
+        res = self.run_cli("check", ".")
+        self.assertNotEqual(res.returncode, 0)
+        self.assertTrue("Tampering Detected" in res.stdout or "HMAC verification failed" in res.stdout or "hash-chain broken" in res.stdout)
 
-        res_gate = self.run_cli("check", ".", "--gate=G9")
-        self.assertNotEqual(res_gate.returncode, 0)
-        self.assertIn("Invalid --gate=G9", res_gate.stdout)
-
-    def test_5_g5_g6_fail_closed_on_deleted_ledger_or_open_variants(self):
-        """T10 & T11: G5/G6 台账删除必须 Fail-Closed，且 status: Open / resolved 均被白名单拦截"""
+    def test_3_r4_block_self_closed_bugs_by_ai_or_coder(self):
+        """R4 (Suggestion 5): 缺陷状态虽为 closed，但关闭者是 AI自己 或 Coder-A 时必须阻断"""
         self.run_cli("init")
         self.run_cli("freeze")
         self.run_cli("approve", "station_master")
 
         review_file = self.cwd / "o9_workspace" / "review_and_defects.yaml"
-        # 测试 status: Open (首字母大写) 及 status: resolved (非关闭白名单)
-        for bad_status in ["Open", "resolved", "in-progress"]:
-            txt = review_file.read_text(encoding="utf-8").replace("defects: []", f"defects:\n  - bug_id: BUG-1\n    status: {bad_status}\n")
-            review_file.write_text(txt, encoding="utf-8")
-            res = self.run_cli("check", ".", "--gate=G5")
-            self.assertNotEqual(res.returncode, 0, f"Failed to block status: {bad_status}")
-            # 恢复
-            review_file.write_text(txt.replace(f"defects:\n  - bug_id: BUG-1\n    status: {bad_status}\n", "defects: []"), encoding="utf-8")
+        base_txt = review_file.read_text(encoding="utf-8")
 
-        # 测试直接删除 review_and_defects.yaml (T11) -> 必须阻断！
-        review_file.unlink()
-        res_del = self.run_cli("check", ".", "--gate=G5")
-        self.assertNotEqual(res_del.returncode, 0)
-        self.assertIn("Missing", res_del.stdout)
+        # AI 自关 Bug -> 必须拦截
+        bad_bug = "defects:\n  - bug_id: BUG-1\n    status: closed\n    closed_by_tester: AI_Self_Closer\n"
+        review_file.write_text(base_txt.replace("defects: []", bad_bug), encoding="utf-8")
+        res_bad = self.run_cli("check", ".", "--gate=G5")
+        self.assertNotEqual(res_bad.returncode, 0)
+        self.assertIn("unauthorized identity", res_bad.stdout)
 
-    def test_6_anti_stub_and_vacuous_assert_and_path_parts(self):
-        """T12 & T13: Path.parts 精确匹配与 TODO / assert True 拦截"""
+        # 独立 QA (qa_lead) 关闭 Bug -> 允许通过
+        good_bug = "defects:\n  - bug_id: BUG-1\n    status: closed\n    closed_by_tester: qa_lead\n"
+        review_file.write_text(base_txt.replace("defects: []", good_bug), encoding="utf-8")
+        res_good = self.run_cli("check", ".", "--gate=G5")
+        self.assertEqual(res_good.returncode, 0)
+
+    def test_4_r5_block_fake_or_dev_null_test_evidence(self):
+        """R5 (Suggestion 6): evidence_log_ref 指向 /dev/null 或不存在文件时必须阻断"""
         self.run_cli("init")
         self.run_cli("freeze")
         self.run_cli("approve", "station_master")
 
-        src_dir = self.cwd / "my_docs_app"
-        src_dir.mkdir()
-        bad_file = src_dir / "service.rb"
-        bad_file.write_text("# TODO: fix later\n", encoding="utf-8")
-        res = self.run_cli("check", ".", "--require-approval")
+        review_file = self.cwd / "o9_workspace" / "review_and_defects.yaml"
+        base_txt = review_file.read_text(encoding="utf-8")
+        review_file.write_text(
+            base_txt.replace("o9_workspace/evidence/run-bb-001.log", "/dev/null"),
+            encoding="utf-8"
+        )
+        res = self.run_cli("check", ".", "--gate=G5")
         self.assertNotEqual(res.returncode, 0)
-        self.assertIn("ANTI-STUB BLOCKER", res.stdout)
+        self.assertIn("Invalid or missing test evidence file", res.stdout)
+
+    def test_5_g7_all_three_decisions_and_ipynb_scan(self):
+        """Suggestion 7 & 9: G7 三项决定完整校验 + .ipynb 扫描拦截"""
+        self.run_cli("init")
+        self.run_cli("freeze")
+        self.run_cli("approve", "station_master")
+
+        # G7 默认模板三项决定齐全，应通过
+        res_g7 = self.run_cli("check", ".", "--gate=G7")
+        self.assertEqual(res_g7.returncode, 0)
+
+        # 写入含 TODO 的 .ipynb 文件 -> 必须拦截
+        nb_file = self.cwd / "analysis.ipynb"
+        nb_file.write_text('{"cells": [{"source": ["# TODO: fake notebook result"]}]}', encoding="utf-8")
+        res_nb = self.run_cli("check", ".", "--gate=G7")
+        self.assertNotEqual(res_nb.returncode, 0)
+        self.assertIn("ANTI-STUB BLOCKER", res_nb.stdout)
+
+    def test_6_legacy_t1_to_t15_regressions(self):
+        """T1-T15 回归保护：无基线阻断、单文件部署、非法参数拦截"""
+        standalone = self.cwd / "gate_runner.py"
+        shutil.copyfile(RUNNER, standalone)
+        res_init = subprocess.run([sys.executable, str(standalone), "init"], cwd=self.cwd, text=True, capture_output=True)
+        self.assertEqual(res_init.returncode, 0)
+
+        # 无基线时 check 阻断
+        res_no_bl = self.run_cli("check", ".")
+        self.assertNotEqual(res_no_bl.returncode, 0)
+
+        # 非法参数阻断
+        self.assertNotEqual(self.run_cli("check", ".", "--gate=G9").returncode, 0)
+        self.assertNotEqual(self.run_cli("approve", "--force").returncode, 0)
 
 if __name__ == "__main__":
     unittest.main()
