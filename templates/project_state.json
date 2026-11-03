@@ -22,6 +22,8 @@
     "baseline_id": null,
     "parent_baseline_id": null,
     "spec_sha256": null,
+    "manifest_sha256": null,
+    "files": [],
     "frozen_at": null
   },
   "baseline_history": [],

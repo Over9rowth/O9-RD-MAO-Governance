@@ -100,6 +100,8 @@
 3. 向站长呈交一页纸决策摘要（含改动点、争议项、权限范围与 `manifest_sha256`）。
 4. **出口**：站长回复批准后，脚本在外部 `o9_workspace/approvals.jsonl` 独立追加账本中写入批准记录并绑定该 `manifest_sha256`。此后任何针对基线文件的字节改动均触发脚本报警熔断。
 
+> **v1.6 控制面落地说明**：`gate_runner.py` 在冻结前强制校验 `spec_and_contracts.md` 非空且含结构化 `AC-xxx` 表行（G1-01）；`manifest` 覆盖 `spec_and_contracts.md` 与 `o9_workspace/contracts/**` 下的全部契约文件，复合指纹 `manifest_sha256` 连同 `files[]` 清单一并签入 FREEZE 记录，`approve` 与 `check` 均重算并比对（G3-01/G3-02）。本地 `.o9_project_id` 与 `~/.o9-trust/index.tsv` 注册表钉死工作区与项目绑定，并提供 `trust-reset <PROJECT_ID>` 灾后恢复通道（G3-03）。G5 阶段要求 `evidence_log_ref` 落在仓库根目录之内且非空，最新一次 QA 运行按 `recorded_at` 时序选取，缺陷与运行条目支持任意键序解析（G5-02/G5-03）。
+
 #### 【G4 隔离开发、并发控制与反作弊检查】
 1. **文件写入域（Write Scope）隔离**：并行任务卡必须声明 `allowed_write_paths`。同一工作区并发任务的写入路径严禁重叠！公共文件（如依赖配置、共享类型）指定唯一当期持有者串行修改。
 2. **反作弊扫描（Anti-Stubbing）**：开发自测完成后，`gate_runner` 自动扫描代码差异：
