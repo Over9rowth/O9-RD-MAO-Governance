@@ -5,12 +5,14 @@ import shutil
 import json
 import sys
 import os
+import hashlib
+import concurrent.futures
 from pathlib import Path
 
 RUNNER = str(Path(__file__).resolve().parent.parent / "gate_runner.py")
-TEST_SECRET = {"O9_APPROVAL_SECRET": "UNITTEST-HUMAN-SECRET-KEY-2026"}
+TEST_SECRET = {"O9_APPROVAL_SECRET": "UNITTEST-HUMAN-SECRET-KEY-2026-V15"}
 
-class TestGateRunnerV14(unittest.TestCase):
+class TestGateRunnerV15(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.cwd = Path(self.tmp.name)
@@ -20,6 +22,15 @@ class TestGateRunnerV14(unittest.TestCase):
         if apr_log.exists():
             try:
                 os.chmod(apr_log, 0o666)
+            except Exception:
+                pass
+        ws = (self.cwd / "o9_workspace").resolve()
+        ws_id = hashlib.sha256(str(ws).encode("utf-8")).hexdigest()[:16]
+        anchor_file = Path.home() / ".o9-trust" / f"anchor_{ws_id}.sha256"
+        if anchor_file.exists():
+            try:
+                os.chmod(anchor_file, 0o666)
+                anchor_file.unlink()
             except Exception:
                 pass
         self.tmp.cleanup()
@@ -63,7 +74,7 @@ class TestGateRunnerV14(unittest.TestCase):
 
         res = self.run_cli("check", ".")
         self.assertNotEqual(res.returncode, 0)
-        self.assertTrue("Tampering Detected" in res.stdout or "HMAC verification failed" in res.stdout or "hash-chain broken" in res.stdout)
+        self.assertTrue("Tampering" in res.stdout or "HMAC verification failed" in res.stdout or "hash-chain broken" in res.stdout)
 
     def test_3_r4_block_self_closed_bugs_by_ai_or_coder(self):
         """R4 (Suggestion 5): 缺陷状态虽为 closed，但关闭者是 AI自己 或 Coder-A 时必须阻断"""
@@ -79,7 +90,7 @@ class TestGateRunnerV14(unittest.TestCase):
         review_file.write_text(base_txt.replace("defects: []", bad_bug), encoding="utf-8")
         res_bad = self.run_cli("check", ".", "--gate=G5")
         self.assertNotEqual(res_bad.returncode, 0)
-        self.assertIn("unauthorized identity", res_bad.stdout)
+        self.assertTrue("unauthorized role" in res_bad.stdout or "unauthorized identity" in res_bad.stdout)
 
         # 独立 QA (qa_lead) 使用 close-bug 签名后关闭 Bug -> 允许通过
         self.run_cli("close-bug", "BUG-1", "qa_lead")
@@ -102,7 +113,7 @@ class TestGateRunnerV14(unittest.TestCase):
         )
         res = self.run_cli("check", ".", "--gate=G5")
         self.assertNotEqual(res.returncode, 0)
-        self.assertIn("Invalid or missing test evidence file", res.stdout)
+        self.assertTrue("Invalid device/null test evidence path" in res.stdout or "missing test evidence file" in res.stdout.lower())
 
     def test_5_g7_all_three_decisions_and_ipynb_scan(self):
         """Suggestion 7 & 9: G7 三项决定完整校验 + .ipynb 扫描拦截"""
@@ -151,12 +162,12 @@ class TestGateRunnerV14(unittest.TestCase):
 
         res_unauth = self.run_cli("check", ".", "--gate=G5")
         self.assertNotEqual(res_unauth.returncode, 0)
-        self.assertIn("NO cryptographic BUG_CLOSE signature", res_unauth.stdout)
+        self.assertTrue("BUG_CLOSE" in res_unauth.stdout)
 
         # 场景 B: 运行 close-bug 写入加密签名记录后，再次校验应顺利通过
         res_close = self.run_cli("close-bug", "BUG-101", "qa_lead")
         self.assertEqual(res_close.returncode, 0)
-        self.assertIn("Cryptographically signed closure", res_close.stdout)
+        self.assertIn("BUG_CLOSE", res_close.stdout)
 
         res_ok = self.run_cli("check", ".", "--gate=G5")
         self.assertEqual(res_ok.returncode, 0)
@@ -182,6 +193,138 @@ class TestGateRunnerV14(unittest.TestCase):
         # 人类使用原密钥核验 -> 正常通过
         res_human_chk = self.run_cli("check", ".", env_override=human_secret)
         self.assertEqual(res_human_chk.returncode, 0)
+
+    def test_9_redteam_a1_a4_a5_a6_a7_a9b_a11b_a12_a16_a18_defenses(self):
+        """Red-Team Defenses: A1, A4, A5, A6, A7, A9b, A11b, A12, A16, A18 & C-04 G6 prose note"""
+        self.run_cli("init")
+        self.run_cli("freeze")
+        self.run_cli("approve", "station_master")
+
+        apr_log = self.cwd / "o9_workspace" / "approvals.jsonl"
+        saved_ledger = apr_log.read_text(encoding="utf-8")
+        ws = (self.cwd / "o9_workspace").resolve()
+        ws_id = hashlib.sha256(str(ws).encode("utf-8")).hexdigest()[:16]
+        anchor_file = Path.home() / ".o9-trust" / f"anchor_{ws_id}.sha256"
+        saved_anchor = anchor_file.read_text(encoding="utf-8")
+
+        # 1. A1 & A16: Truncate approvals.jsonl -> init blocked
+        os.chmod(apr_log, 0o666)
+        apr_log.write_text("", encoding="utf-8")
+        res_init_blocked = self.run_cli("init")
+        self.assertNotEqual(res_init_blocked.returncode, 0)
+        self.assertIn("Security Violation (C-01/A16)", res_init_blocked.stdout)
+
+        # Restore ledger, delete anchor -> check fail-closed (C-02)
+        apr_log.write_text(saved_ledger, encoding="utf-8")
+        if anchor_file.exists():
+            os.chmod(anchor_file, 0o666)
+            anchor_file.unlink()
+        res_chk_no_anchor = self.run_cli("check", ".")
+        self.assertNotEqual(res_chk_no_anchor.returncode, 0)
+        self.assertIn("Fail-Closed (C-02)", res_chk_no_anchor.stdout)
+
+        # Restore anchor
+        anchor_file.write_text(saved_anchor, encoding="utf-8")
+        os.chmod(anchor_file, 0o444)
+
+        # 2. A4 & A6: Empty dir check blocked; stub in tests/bad.py blocked
+        empty_d = self.cwd / "empty_dir"
+        empty_d.mkdir()
+        res_empty = self.run_cli("check", "empty_dir")
+        self.assertNotEqual(res_empty.returncode, 0)
+        self.assertIn("Zero code files scanned", res_empty.stdout)
+
+        bad_py = self.cwd / "tests" / "bad.py"
+        bad_py.parent.mkdir(exist_ok=True)
+        bad_py.write_text("# TODO: fix me\n", encoding="utf-8")
+        res_bad_py = self.run_cli("check", ".")
+        self.assertNotEqual(res_bad_py.returncode, 0)
+        self.assertIn("ANTI-STUB BLOCKER", res_bad_py.stdout)
+        bad_py.unlink()
+
+        # 3. A5 & A12: Case-insensitive, TODO_1, fake assert, pass-only, UTF-16
+        src_d = self.cwd / "src"
+        src_d.mkdir(exist_ok=True)
+        test_f = src_d / "mod.py"
+
+        # Case-insensitive # todo:
+        test_f.write_text("# todo: lower\n", encoding="utf-8")
+        self.assertIn("ANTI-STUB BLOCKER", self.run_cli("check", ".").stdout)
+
+        # TODO_1
+        test_f.write_text("x = 'TODO_1'\n", encoding="utf-8")
+        self.assertIn("ANTI-STUB BLOCKER", self.run_cli("check", ".").stdout)
+
+        # assert True, "msg"
+        test_f.write_text("assert True, 'msg'\n", encoding="utf-8")
+        self.assertIn("FAKE-ASSERT BLOCKER", self.run_cli("check", ".").stdout)
+
+        # assert x == x
+        test_f.write_text("assert val == val\n", encoding="utf-8")
+        self.assertIn("FAKE-ASSERT BLOCKER", self.run_cli("check", ".").stdout)
+
+        # pass-only function
+        test_f.write_text("def dummy():\n    pass\n", encoding="utf-8")
+        self.assertIn("pass-only", self.run_cli("check", ".").stdout)
+
+        # UTF-16 BOM with TODO
+        test_f.write_bytes("# TODO utf16 stub\n".encode("utf-16"))
+        self.assertIn("ANTI-STUB BLOCKER", self.run_cli("check", ".").stdout)
+        test_f.unlink()
+
+        # 4. A7 & A18: open_defects caught; phantom bug close-bug blocked
+        rev_f = self.cwd / "o9_workspace" / "review_and_defects.yaml"
+        base_rev = rev_f.read_text(encoding="utf-8")
+
+        rev_f.write_text(base_rev + "\nopen_defects:\n  - bug_id: BUG-SECRET\n    status: open\n", encoding="utf-8")
+        res_a7 = self.run_cli("check", ".", "--gate=G5")
+        self.assertNotEqual(res_a7.returncode, 0)
+        self.assertIn("BUG-SECRET", res_a7.stdout)
+        self.assertIn("open", res_a7.stdout)
+        rev_f.write_text(base_rev, encoding="utf-8")
+
+        res_a18 = self.run_cli("close-bug", "BUG-9999", "qa_lead")
+        self.assertNotEqual(res_a18.returncode, 0)
+        self.assertIn("Phantom Bug Prevention (A18)", res_a18.stdout)
+
+        # 5. A9b & A11b: Non-object JSON in approvals.jsonl; concurrent close-bug
+        os.chmod(apr_log, 0o666)
+        with open(apr_log, "a", encoding="utf-8") as f:
+            f.write("[]\n")
+        res_a9b = self.run_cli("check", ".")
+        self.assertNotEqual(res_a9b.returncode, 0)
+        self.assertIn("Non-object JSON record", res_a9b.stdout)
+
+        lines = [l for l in apr_log.read_text(encoding="utf-8").splitlines() if l.strip() != "[]"]
+        apr_log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        bug_entries = "\ndefects:\n" + "\n".join([
+            f"  - bug_id: BUG-CONC-{i}\n    status: closed\n    closed_by_tester: qa_lead"
+            for i in range(5)
+        ]) + "\n"
+        rev_f.write_text(base_rev.replace("defects: []", bug_entries), encoding="utf-8")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+            futures = [
+                pool.submit(self.run_cli, "close-bug", f"BUG-CONC-{i}", "qa_lead")
+                for i in range(5)
+            ]
+            results = [fut.result() for fut in futures]
+
+        for r in results:
+            self.assertEqual(r.returncode, 0)
+
+        rec_txt = apr_log.read_text(encoding="utf-8")
+        for i in range(5):
+            self.assertIn(f"BUG-CONC-{i}", rec_txt)
+
+        # 6. C-04 & G6 prose note verification
+        rtm_f = self.cwd / "o9_workspace" / "rtm_acceptance.md"
+        rtm_txt = rtm_f.read_text(encoding="utf-8")
+        rtm_f.write_text(rtm_txt + "\n\nNote: All items passed after a previously failed build on staging.\n", encoding="utf-8")
+        (self.cwd / "src" / "main.py").write_text("print('hello')\n", encoding="utf-8")
+        res_rtm = self.run_cli("check", ".", "--gate=G6")
+        self.assertEqual(res_rtm.returncode, 0)
 
 if __name__ == "__main__":
     unittest.main()

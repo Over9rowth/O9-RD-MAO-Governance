@@ -44,6 +44,95 @@
 
 ---
 
+# Section 4: Gate-by-Gate Protocol (G0 to G7 — 9 Gate Nodes)
+
+## 4.1 Orthogonal State Triad
+In `project_state.json`, state dimensions are strictly separated to prevent state spoofing:
+*   `phase`: `G0 | G0.5 | G1 | G2 | G3 | G4 | G5 | G6 | G7 | observing | archived`
+*   `execution_state`: `active | awaiting-approval | blocked | rework-required | paused | cancelled | completed`
+*   `gate_results`: Each gate independently evaluates to `not-started | in-progress | passed | conditional | failed | waived | not-applicable`
+
+## 4.2 Standard Gate Procedures (Gate-by-Gate Protocol)
+
+### [G0 Initiation] & [G0.5 Requirement Two-Way Confirmation]
+1. The Lead Director establishes the project state ledger, recording risk routing (S/M/L), Token/cost budget caps (default: **80% warning threshold, 100% hard stop**), and environmental ground truth baselines (OS, Shell, encoding, working directory).
+2. The Lead Director completes the G0.5 restatement in `spec_and_contracts.md` (distinguishing: Owner's verbatim words / Director's inferences / unverified hypotheses), explicitly enumerating **In-Scope (Must-haves)**, **Out-of-Scope (Explicit Won't-haves)**, and structured **Acceptance Criteria (AC, including preconditions, inputs, expected outcomes, and Core/General classification)**.
+3. *Technical Unknown Spike Exit*: If technical feasibility is unknown, request a small budget to build a prototype in an isolated sandbox. Upon spike completion, return to G0.5 with factual conclusions; **spike prototype code is strictly prohibited from bypassing quality gates to become production deliverables directly**.
+4. **Exit Criterion**: Human Owner explicitly confirms the restatement contents.
+
+### [G1 Design & Three-Tier Contracts]
+The Lead Director finalizes the technical design in `spec_and_contracts.md` (and supporting machine-readable contract files), delivering the Three-Tier Contracts:
+1. **Tier 1: Data & Interface Contract**: OpenAPI / JSON Schema / TypeScript types and other real machine-readable definition files, verified via automated syntax validation scripts (declare `no-applicable-data-contract` if no structured data exists).
+2. **Tier 2: External Behavior & Business Invariants**: State transition matrices, error codes, and business invariants that must never be violated.
+3. **Tier 3: Testability Contract (Test Harness)**: Explicit test execution commands, readiness probe criteria, test database reset commands (**strictly forbidden to point to production databases!**), external dependency mocking methods, evidence log locations, and cleanup procedures. For L-Track, an additional **Fuzzing input surface & budget plan** is mandatory.
+
+### [G2 Blind Three-Perspective Peer Review] (S-Track conditionally exemptible; M-Track $\ge 1$ reviewer; L-Track $\ge 2$ reviewers, preferably from heterogeneous model families)
+1. `gate_runner` bundles whitelisted read-only materials (including sanitized copies, requirements, and contracts), **stripping the Lead Director's self-evaluation and comments from other reviewers**.
+2. Reviewers execute in a clean, stateless session, producing reports across three orthogonal perspectives: **Perspective A (Architecture & Requirements)**, **Perspective B (Security & Reliability)**, and **Perspective C (Simpler Alternatives & Over-Engineering Checks)**. Every finding is tagged as `Blocker | Major | Suggestion` (or `No finding | Insufficient evidence`).
+3. Original review reports are archived. The Lead Director responds to every finding in `review_and_defects.yaml` (`Adopted | Partially Adopted | Rejected | Clarification Needed`). The control plane verifies 100% 1-to-1 mapping between finding IDs and responses without omissions.
+4. **Exit Criterion**: All `Blocker` findings are revised and resolved (or proven false positives via objective evidence and independently verified). If the Director and Reviewer reach an impasse, after a maximum of **2 rounds**, it must be immediately escalated to the Human Owner for arbitration.
+
+### [G3 Baseline Freeze & Owner Authorization] (Four-Step Anti-Forgery Freeze Method)
+1. The Lead Director completes contract and design revisions and halts all file modifications.
+2. `gate_runner` calculates byte-level SHA-256 hashes for `spec_and_contracts.md` and contract files, creates the freeze `manifest`, assigns a monotonic sequence `seq`, and computes the root `manifest_sha256`.
+3. Present a one-page decision brief to the Human Owner (detailing change diffs, disputed items, permission scopes, and `manifest_sha256`).
+4. **Exit Criterion**: After the Owner explicitly replies with approval, `gate_runner approve` records an HMAC-SHA256 signed entry binding the role and `manifest_sha256` in `approvals.jsonl`, synchronized with the external trust anchor `~/.o9-trust/anchor_<ws_id>.sha256`. Any subsequent byte modifications to frozen baseline files trigger immediate control-plane circuit breaking.
+
+### [G4 Isolated Development, Concurrency Control & Anti-Stubbing Check]
+1. **Write Scope Isolation**: Parallel task tickets must declare explicit `allowed_write_paths`. Concurrent tasks in the same workspace must never have overlapping write paths! Shared configuration files (e.g., dependency manifests, shared types) are assigned to a single current holder for serialized modification.
+2. **Anti-Stubbing Scan**: Upon completion of developer self-testing, `gate_runner check` automatically scans the codebase:
+   * Rejects incomplete placeholders (`TODO`, `FIXME`, empty functions, bare `pass`) across UTF-8, UTF-16, production, and test files;
+   * Cross-checks the Mock & Stub Inventory to ensure mock data and hardcoded fake returns never reach production call paths;
+   * Rejects deleted assertions or vacuous assertions (`assert True`, `assert x == x`).
+3. **Deterministic Error Circuit Breaker**: When an identical command errors out with no substantial changes in code or environment, blind retry loops are strictly forbidden.
+4. **Exit Criterion**: Build generates a unique candidate build identifier `candidate_id` (locking source commit, dependency lockfile, and configuration digest) and hands over to G5.
+
+### [G5 Independent Verification: Black-Box First, Fuzzing & Defect Closed-Loop]
+1. **Phase 1: Blindfolded Black-Box Testing (Black-Box First Iron Law)**
+   * Launch a fresh, independent QA session with **production source code physically shielded**, providing only approved specifications, ACs, behavioral/testability contracts, and the built `candidate_id` test entrypoint.
+   * QA tester freezes first-round black-box test cases, executes normal, boundary, error, and permission test cases, and produces tamper-resistant test execution logs (recording command, exit code, observed behavior, and evidence log path).
+2. **Phase 2: Mandatory L-Track Fuzzing & Open-Box White-Box Testing**
+   * After black-box conclusions are locked, grant read-only source access for white-box inspection (error paths, concurrency, resource leaks, prompt injection, and tool privilege escalation).
+   * L-Track projects must execute fuzzing as planned, verifying not just crash resilience, but business invariant integrity and data consistency.
+3. **Phase 3: AI-Unreachable Scenarios -> Manual Verification Todo Card**
+   * ACs requiring physical hardware or human sensory/UX verification must remain `not-run` or `blocked` and be recorded on a Manual Verification Card for human completion. AI guessing or marking `passed` is strictly forbidden.
+4. **Defect Closed-Loop Iron Law**: Defects follow the lifecycle: `open -> fixing -> ready-for-retest -> closed`. Developers can only advance bugs to `ready-for-retest` and produce a new `candidate_id`; **only the independent QA tester has authority to sign `gate_runner close-bug` to transition a bug to `closed` after verifying fixes and running regression suites**.
+
+### [G6 Technical Acceptance & RTM Reconciliation]
+1. In `rtm_acceptance.md`, pull all approved ACs and align line-by-line: source commit, test case ID, execution record `run_id`, coverage status (`covered`), and test outcome (`passed`).
+2. **Independent Verification Requirements**:
+   * If the Lead Director acted as developer, S/M tracks require the Human Owner or an uninvolved independent session to verify test execution evidence;
+   * L-Track projects, regardless of staffing, must initiate a completely fresh **G6 Cross-Review Session** to audit raw logs, specialized evidence, and open defects for critical ACs.
+3. **Conditional Acceptance (Conditional Pass)**: If non-blocking flaws (Major/Suggestion) are accepted under known debt, they must be registered in the Conditions Ledger (specifying mitigation constraints, owner, deadline, and overdue shutdown actions). **Blockers and Core AC failures can NEVER be granted conditional pass!**
+
+### [G7 Owner Sign-Off, Decoupled Release & Double-Loop Post-Mortem]
+1. The Human Owner makes three independent, decoupled decisions at the end of `rtm_acceptance.md`:
+   * ① **Sign-Off Acceptance Decision**: Whether the engineering deliverables meet acceptance standards (`approved | rejected | rework-required`).
+   * ② **Release Authorization Decision**: Whether and when the deliverables are authorized for production deployment (`hold | authorized`).
+   * ③ **Project Ownership & Open-Source License Decision**: Explicit copyright assignment and license declaration (e.g., MIT, Apache-2.0, Proprietary).
+2. Upon release authorization, execute deployment and smoke tests according to the release package.
+3. Collect minimal governance metrics (tokens/cost, rejection count, 4-category gate interception attribution, escaped defects), conduct double-loop post-mortem analysis, and determine whether SOP upgrades are warranted.
+
+---
+
+# Section 5: Change Control (C0-C3), 80% Budget Handoff & Emergency Hotfix
+
+## 5.1 Four-Tier Change Control During Development
+*   **C0 (In-Implementation Micro-Adjustment)**: No AC change, no interface contract change, no security boundary change $\rightarrow$ Record diffs within task and run test suite; no external authorization required.
+*   **C1 (Compatible Contract Extension)**: Backward-compatible extension within original scope with zero risk increase (must verify strict consumers; optional field addition alone does not prove compatibility) $\rightarrow$ If pre-authorized by Human Owner, Lead Director verifies and records derived baseline; if not pre-authorized, submit for quick Owner approval.
+*   **C2 (Partial Breaking / Standard Change)**: Incompatible interface change or modified ACs $\rightarrow$ **Immediately halt affected scope**, perform targeted review, and re-freeze G3 baseline with Owner re-approval.
+*   **C3 (Major Requirement / Security Redesign)**: Core objectives changed or high-risk escalation triggered $\rightarrow$ **Halt entire project pipeline**, roll back to G0/G0.5/G1 for re-routing and redesign.
+
+## 5.2 Budget Warning & 80% Graceful Handoff
+*   When cumulative resource consumption hits the **80% warning threshold**, immediately cease opening new tasks and utilize the remaining 20% **Closing Reserve** to save a **Work Snapshot** at a consistent state.
+*   **Snapshot Fidelity Iron Law**: Truthfully record uncommitted changes (`git diff`), pending checks, and unknown side effects; **never roll back or delete incomplete user code to fabricate a "clean snapshot", and never misrepresent a work snapshot as an approved baseline!**
+*   Sudden power outages or quota exhaustion may be flagged as `handoff.status: incomplete`; resuming agents must wait for previous write locks to clear and verify on-disk consistency before resuming write operations.
+
+## 5.3 Emergency Hotfix
+Reserved strictly for production incidents to mitigate live damage. Execute rollback, shutdown, or minimal fix within pre-authorized operational boundaries; if conditions preclude running full G5 verification on-site, record as **Restricted Emergency Mitigation** (fabricating G5 pass records is prohibited). Within **24 hours** after system stabilization, complete the hotfix incident card, independent retesting, and root-cause post-mortem.
+
+---
+
 # Part 3: Ready-to-Use "Core 4-Artifact" Templates
 
 Initialize an `o9_workspace/` directory in your project with these 4 files:
@@ -53,7 +142,7 @@ Initialize an `o9_workspace/` directory in your project with these 4 files:
 {
   "project_id": "PRJ-2026-001",
   "title": "Project Title",
-  "sop_version": "O9-RD-Next-V1.0",
+  "sop_version": "O9-RD-Next-V1.5",
   "route": null,
   "risk_flags": {
     "auth_or_permission_change": null,

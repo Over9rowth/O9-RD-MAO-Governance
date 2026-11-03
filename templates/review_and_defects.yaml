@@ -35,7 +35,7 @@ g5_test_runs:
     exit_code: 0
     evidence_log_ref: "o9_workspace/evidence/run-bb-001.log"
 
-# 4. Defects Ledger (Allowed closed statuses: closed, verified, rejected)
+# 4. Defects Ledger (Allowed closed statuses: closed, verified)
 defects: []
 
 # 5. Manual Verification Todos (For hardware/real-device UX unreachable by AI)
