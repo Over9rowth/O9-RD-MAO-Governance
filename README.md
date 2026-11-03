@@ -19,7 +19,7 @@
 - 🔒 **G0.5 Two-Way Confirmation & G3 SHA-256 Baseline Lock**: Freeze specs and schemas cryptographically before coding. Agents cannot alter the exam paper to pass tests.
 - 🚦 **Risk-First Routing (`S / M / L` Tracks)**: 2-touchpoint fast track for UI/copy tweaks (`S`), full contract review for features (`M`), and strict sandbox + fuzzing for Auth/Billing/DB ops (`L`).
 - 🙈 **G5 Black-Box Testing First**: QA agents run in clean sessions **without read access to `src/`**, testing purely against the frozen contract before white-box inspection.
-- 🚫 **Anti-Stubbing Control Plane (`gate_runner.py`)**: Deterministic script blocks `TODO` placeholders, mock leaks in production paths, and unauthorized spec edits.
+- 🚫 **Deterministic Control Plane CLI (`gate_runner.py`)**: Reference deterministic control-plane CLI (enforcing G3 SHA-256 baseline lock, detached approval, G4 anti-stub/fake-assert blocking, and G5/G6 status verification).
 
 ---
 
@@ -31,14 +31,17 @@ Copy [`.cursorrules`](./.cursorrules) or [`CLAUDE.md`](./CLAUDE.md) into your pr
 ### Option B: Run the Deterministic Control Plane CLI
 Zero third-party dependencies (pure Python 3 standard library):
 ```bash
-# 1. Initialize the 4 core governance artifacts in ./o9_workspace/
+# 1. Sync 4 core artifacts from ./templates/
 python gate_runner.py init
 
-# 2. Freeze G3 spec & contract baseline with SHA-256 fingerprint
+# 2. Freeze G3 baseline (incremental BL-001 + SHA-256)
 python gate_runner.py freeze
 
-# 3. Verify baseline integrity & scan source code for TODO/stub cheating
-python gate_runner.py check ./src
+# 3. Bind detached human approval signature
+python gate_runner.py approve Over9rowth
+
+# 4. Fail-closed hash check + block TODOs & fake asserts
+python gate_runner.py check ./src --gate=G5
 ```
 
 ### Option C: Interactive Workflow Customizer (Meta-Prompt)
@@ -66,7 +69,7 @@ flowchart LR
 ## 📂 Repository Structure
 
 ```text
-├── gate_runner.py               # Deterministic control-plane CLI (init / freeze / check)
+├── gate_runner.py               # Reference deterministic control-plane CLI (init / freeze / approve / check)
 ├── .cursorrules / CLAUDE.md     # Drop-in governance rules for AI IDEs
 ├── templates/                   # Ready-to-use 4-artifact templates (JSON/YAML/MD)
 ├── prompts/                     # Interactive Agile MAO Coach Meta-Prompts (EN & ZH)

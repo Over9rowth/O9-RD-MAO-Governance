@@ -19,7 +19,7 @@
 - 🔒 **G0.5 双向复述 & G3 SHA-256 防伪锁死**：动工前先复述“做什么/不做什么”；契约经批准后计算字节级 SHA-256 指纹锁死，严禁 AI 打不过就偷改考卷。
 - 🚦 **风险一票否决路由（`S / M / L` 三轨）**：改文案样式走 `S` 轨（两次触点极速通关）；常规开发走 `M` 轨；触及鉴权/资金/删库强制走 `L` 轨（E2 沙箱 + 强制 Fuzzing）。
 - 🙈 **G5 黑盒测试先行铁律**：独立测试 Agent 在第一阶段**物理屏蔽业务源码（`src/`）**，仅凭契约测试外部行为，锁死结果后才准看源码做白盒检查；开发严禁自己关闭 Bug。
-- 🚫 **确定性控制面脚本（`gate_runner.py`）**：零依赖 Python 脚本一键初始化四件套、校验基线哈希、自动扫描拦截 `TODO` 占位符。
+- 🚫 **确定性控制面 CLI（`gate_runner.py`）**：零依赖确定性控制面参考实现（强制 G3 SHA-256 基线锁死、独立签名绑定、G4 拦截 TODO/fake-assert、以及 G5/G6 门禁状态校验）。
 
 ---
 
@@ -29,9 +29,10 @@
    直接将根目录的 [`.cursorrules`](./.cursorrules) 或 [`CLAUDE.md`](./CLAUDE.md) 复制到你的项目根目录即可生效。
 2. **使用确定性控制面命令行工具（`gate_runner.py`）**：
    ```bash
-   python gate_runner.py init          # 1. 在 ./o9_workspace/ 一键生成核心四件套模板
-   python gate_runner.py freeze        # 2. G3 批准后锁定需求契约 SHA-256 防伪指纹
-   python gate_runner.py check ./src   # 3. 校验基线是否被篡改 + 扫描源码 TODO 作弊占位符
+   python gate_runner.py init                        # 1. 从 ./templates/ 同步核心四件套
+   python gate_runner.py freeze                      # 2. 冻结 G3 基线 (增量 BL-001 + SHA-256)
+   python gate_runner.py approve Over9rowth          # 3. 绑定外部独立签名批准
+   python gate_runner.py check ./src --gate=G5       # 4. Fail-closed 防篡改校验 + 拦截 TODO 与 fake-assert
    ```
 3. **让 AI 教练为你量身裁剪极简工作流**：
    复制 [`prompts/MAO-Workflow-Coach-zh.md`](./prompts/MAO-Workflow-Coach-zh.md) 发给 Claude/GPT，回答 4 个小问题即可获得定制方案。
