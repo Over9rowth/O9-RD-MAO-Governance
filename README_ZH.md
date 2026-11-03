@@ -61,7 +61,7 @@
 ## 📚 完整文档与三卷蓝皮书导航 (`docs/` & `prompts/`)
 
 - 📊 **[《控制落实矩阵与威胁模型 (CONTROL-MATRIX.md)》](./docs/CONTROL-MATRIX.md)**
-- 🛠️ **[《O9-RD Next V1.0 完整规范与实战模板》](./docs/zh/00-O9-RD-Spec-v1.0-zh.md)** | **[English Spec](./docs/en/00-O9-RD-Spec-v1.0-en.md)**
+- 🛠️ **[《O9-RD Next V1.6.4 完整规范与实战模板》](./docs/zh/00-O9-RD-Spec-v1.0-zh.md)** | **[English Spec](./docs/en/00-O9-RD-Spec-v1.0-en.md)**
 - 🤖 **[《程序员 MAO 工作流定制教练 · Meta-Prompt》](./prompts/MAO-Workflow-Coach-zh.md)** | **[English Meta-Prompt](./prompts/MAO-Workflow-Coach-en.md)**
 - 📕 **[《第一卷：破雾与筑基篇 (第 1~5 章)》](./docs/zh/01-Guide-Part1-Foundations.md)**
 - 📗 **[《第二卷：空间状态与流程质量篇 (第 6~11 章)》](./docs/zh/02-Guide-Part2-State-and-Quality.md)**

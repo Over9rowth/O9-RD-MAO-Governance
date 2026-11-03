@@ -13,7 +13,7 @@
 
 ## 1. Gate-by-Gate Control Matrix
 
-| Gate / Control ID | Governance Requirement | Status in V1.6.3 | Enforcement Mechanism & Scope Boundary |
+| Gate / Control ID | Governance Requirement | Status in V1.6.4 | Enforcement Mechanism & Scope Boundary |
 | :--- | :--- | :---: | :--- |
 | **G0-01** | Risk-first routing (`Trivial / S / M / L` tracks) | `manual-verified` | Guided by `.cursorrules`, `CLAUDE.md` & Spec §3 checklists; confirmed by Human Owner. |
 | **G0.5-01** | Two-way restatement (In-Scope, Out-of-Scope, AC) | `manual-verified` | Enforced via Director System Prompt & IDE rules before coding begins. |

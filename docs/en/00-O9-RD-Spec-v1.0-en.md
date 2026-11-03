@@ -1,4 +1,4 @@
-# 🛠️ O9-RD Next V1.0 | Master Workflow Specification & 4-Artifact Templates (English Edition)
+# 🛠️ O9-RD Next V1.6.4 | Master Workflow Specification & 4-Artifact Templates (English Edition)
 
 > **Positioning**: Production-ready Multi-Agent Orchestration (MAO) governance standard.  
 > **Core Principle**: Separate the **Deterministic Control Plane** (Python/Shell scripts, Git, container mounts, SHA-256 verification) from the **Non-Deterministic Execution Plane** (LLM agents).
@@ -78,7 +78,7 @@ The Lead Director finalizes the technical design in `spec_and_contracts.md` (and
 3. Present a one-page decision brief to the Human Owner (detailing change diffs, disputed items, permission scopes, and `manifest_sha256`).
 4. **Exit Criterion**: After the Owner explicitly replies with approval, `gate_runner approve` records an HMAC-SHA256 signed entry binding the role and `manifest_sha256` in `approvals.jsonl`, synchronized with the external trust anchor `~/.o9-trust/anchor_<ws_id>.sha256`. Any subsequent byte modifications to frozen baseline files trigger immediate control-plane circuit breaking.
 
-> **v1.6 control-plane note**: before freezing, `gate_runner.py` enforces that `spec_and_contracts.md` is non-empty and carries structured `AC-xxx` table rows (G1-01). The `manifest` covers `spec_and_contracts.md` plus every contract file under `o9_workspace/contracts/`, and the composite `manifest_sha256` together with the `files[]` listing is signed into the FREEZE record and recomputed by both `approve` and `check` (G3-01/G3-02). The local `.o9_project_id` marker and the `~/.o9-trust/index.tsv` registry pin the workspace-to-project binding and provide the `trust-reset <PROJECT_ID>` disaster-recovery path (G3-03). At G5, `evidence_log_ref` must resolve inside the repository root and be non-empty, the latest QA run is selected by `recorded_at` chronology, and defect/run items are parsed order-independently (G5-02/G5-03).
+> **V1.6.4 control-plane note**: before freezing, `gate_runner.py` enforces that `spec_and_contracts.md` is non-empty and carries structured `AC-xxx` table rows (G1-01). The `manifest` covers `spec_and_contracts.md` plus every contract file under `o9_workspace/contracts/`, and the composite `manifest_sha256` together with the `files[]` listing is signed into the FREEZE record and recomputed by both `approve` and `check` (G3-01/G3-02). The local `.o9_project_id` marker and the `~/.o9-trust/index.tsv` registry pin the workspace-to-project binding and provide the `trust-reset <PROJECT_ID>` disaster-recovery path (G3-03). At G5, `evidence_log_ref` must resolve inside the repository root and be non-empty, the latest QA run is selected by `recorded_at` chronology, and defect/run items are parsed order-independently (G5-02/G5-03).
 
 ### [G4 Isolated Development, Concurrency Control & Anti-Stubbing Check]
 1. **Write Scope Isolation**: Parallel task tickets must declare explicit `allowed_write_paths`. Concurrent tasks in the same workspace must never have overlapping write paths! Shared configuration files (e.g., dependency manifests, shared types) are assigned to a single current holder for serialized modification.
@@ -137,24 +137,30 @@ Reserved strictly for production incidents to mitigate live damage. Execute roll
 
 # Part 3: Ready-to-Use "Core 4-Artifact" Templates
 
-Initialize an `o9_workspace/` directory in your project with these 4 files:
+Initialize an `o9_workspace/` directory in your project with these 4 core files to govern the entire workflow:
 
-## Template 1: `o9_workspace/project_state.json` (Control Plane Ledger)
+```text
+o9_workspace/
+ ├── project_state.json         # [Core 1] Control plane state machine, active baseline metadata & audit event cache
+ ├── spec_and_contracts.md      # [Core 2] G0.5 Two-Way Confirmation + AC Standards + G1 Three-Tier Contracts
+ ├── review_and_defects.yaml    # [Core 3] G2 Blind Reviews + Mock Inventory + G5 QA Runs & Defects Ledger
+ ├── rtm_acceptance.md          # [Core 4] G6 Requirements Traceability Matrix (RTM) + Conditions + G7 Owner Decisions
+ └── approvals.jsonl            # [Decoupled Ledger] Append-only signature ledger (HMAC-SHA256 hash-chained with ~/.o9-trust/)
+```
+
+> **Decoupled Ledger & Default-Red Disclosure**: In addition to the four core artifacts, `init` creates an independent, read-only append-only signature ledger **`o9_workspace/approvals.jsonl`** (anchored externally in `~/.o9-trust/` with HMAC-SHA256 hash chains). This completely separates cryptographic approval signatures from the `project_state.json` status cache, eliminating self-hashing circular dependency. All out-of-the-box templates are in a **Default-Red** state (`source_code_hidden_verified: false`, `exit_code: -1`, valid `recorded_at` timestamps, closed statuses strictly `closed / verified`, RTM defaulted to `not-covered / not-run`, and G7 sign-off defaulted to `pending`), preventing zero-work gate bypasses.
+
+---
+
+## Template 1: `o9_workspace/project_state.json` (Control Plane State Machine & Audit Cache)
+*(Note: Maintained by `gate_runner.py`; approval signatures live independently in `o9_workspace/approvals.jsonl`)*
+
 ```json
 {
   "project_id": "PRJ-2026-001",
   "title": "Project Title",
-  "sop_version": "O9-RD-Next-V1.5",
-  "route": null,
-  "risk_flags": {
-    "auth_or_permission_change": null,
-    "sensitive_data_or_secret": null,
-    "irreversible_data_op": null,
-    "money_or_billing": null,
-    "broad_prod_impact": null,
-    "agent_external_side_effect": null,
-    "core_architecture_change": null
-  },
+  "sop_version": "O9-RD-Next-V1.6.4",
+  "route": "M",
   "state": {
     "phase": "G0",
     "execution_state": "active",
@@ -170,143 +176,129 @@ Initialize an `o9_workspace/` directory in your project with these 4 files:
       "G7": "not-started"
     }
   },
-  "budgets": {
-    "token_limit": 500000,
-    "token_used": 0,
-    "warning_ratio": 0.8,
-    "hard_stop_ratio": 1.0,
-    "review_escalation_max_rounds": 2
-  },
   "active_baseline": {
     "baseline_id": null,
+    "parent_baseline_id": null,
+    "spec_sha256": null,
     "manifest_sha256": null,
-    "files": [
-      { "path": "o9_workspace/spec_and_contracts.md", "bytes": null, "sha256": null }
-    ]
+    "files": [],
+    "frozen_at": null
   },
-  "detached_approvals": [
-    {
-      "approval_id": "APR-G3-001",
-      "gate": "G3",
-      "decision": "pending",
-      "approver": "HumanOwner",
-      "decided_at": null,
-      "bound_manifest_sha256": null,
-      "authorized_write_scopes": []
-    }
-  ],
-  "workstreams_and_locks": [
-    {
-      "task_id": "TASK-01",
-      "owner_agent": "Coder-A",
-      "allowed_write_paths": ["src/module_a/**"],
-      "shared_resources_locked": ["port:8081"],
-      "candidate_id": null
-    }
-  ],
-  "handoff": {
-    "status": "not-required",
-    "work_snapshot_id": null,
-    "uncommitted_diff_ref": null,
-    "write_lock_released": false
-  }
+  "baseline_history": [],
+  "audit_events": []
 }
 ```
 
-## Template 2: `o9_workspace/spec_and_contracts.md` (G0.5 & G1 Master Spec)
+---
+
+## Template 2: `o9_workspace/spec_and_contracts.md` (G0.5 Two-Way Confirmation & G1 Three-Tier Contracts)
+
 ```markdown
-# Requirement Specification & Three-Tier Engineering Contracts
-- **Project ID**: PRJ-2026-001 | **Revision**: v0.1 | **Track**: [ S / M / L ]
+# Requirement Specification & Three-Tier Engineering Contracts (Spec & Contracts)
+- **Project ID**: PRJ-2026-001
+- **Revision**: v0.1
+- **Track**: [ S / M / L ]
 
 ## Part 1: G0.5 Requirement Clarification & Two-Way Confirmation
 - **Original Request Ref**:
 - **Director's Restated Goal**:
 - **Must-Have Scope (In-Scope)**:
-  1. `[REQ-001]` (Source: Explicit Owner Request / Director Inference)
+  1. `[REQ-001]` (Explicit Request / Director Inference)
 - **Explicitly Excluded (Out-of-Scope)**:
-  1.
+  1. None
 - **Structured Acceptance Criteria (AC)**:
-| AC-ID | REQ-ID | Core/General | Preconditions | Input / Action | Expected Result & Failure Behavior | Verification Mode |
+| AC-ID | REQ-ID | Importance | Preconditions | Input / Action | Expected Result & Failure Behavior | Mode |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `AC-001` | `REQ-001` | `core` | | | | `automated` |
-- **Owner Confirmation (Pre-Freeze)**: [ Approved / Needs Revision ]
+| `AC-001` | `REQ-001` | `core` | Service running | Valid input | Returns 200 OK | `automated` |
+- **Owner Confirmation**: Approved
 
 ## Part 2: G1 Architecture & Three-Tier Contracts
-### 2.1 Design Summary, Trade-offs & Rollback Plan
+### 2.1 Design Summary & Rollback Plan
 ### 2.2 Tier 1: Data & Interface Contract (Schema)
-- **Applicability**: [ `applicable` / `no-applicable-data-contract` ]
-- **Schema Definition & Validation Result**:
+- **Applicability**: `applicable`
 ### 2.3 Tier 2: External Behavior & Business Invariants
 ### 2.4 Tier 3: Testability Contract (Test Harness for G5 QA)
-- **Working Dir & Startup Command**:
-- **Readiness Probe Condition**:
-- **Required Env Var Names (NO secret values!)**:
-- **Synthetic Data Setup & Reset Command (Test DB only)**:
-- **External Dependency Mocks (Must be unreachable in prod)**:
-- **L-Track Mandatory Fuzzing Plan**: Target surfaces, fuzzer tool, budget, failure oracles.
+- **Working Dir & Startup Command**: `pytest`
+- **Readiness Condition**: Exit code 0
+- **Synthetic Data Reset Command**: N/A
 ```
 
-## Template 3: `o9_workspace/review_and_defects.yaml` (G2 Reviews & G5 Bugs)
+---
+
+## Template 3: `o9_workspace/review_and_defects.yaml` (G2 Blind Reviews, Mock Inventory & G5 Defects Ledger)
+
 ```yaml
 project_id: PRJ-2026-001
 bound_baseline_id: BL-001
 
+# 1. G2 Blind Three-Perspective Review Ledger
 g2_reviews:
+  review_pack_sha256: null
   reviewers:
-    - reviewer_id: REV-01
+    - reviewer_id: REV-SESSION-01
       isolation_level: E1
-      perspectives:
-        A_architecture_fit: "Checked"
-        B_security_reliability: "Checked"
+      perspectives_checked:
+        A_architecture_and_req: "Checked"
+        B_security_and_reliability: "Checked"
         C_simpler_alternatives: "No finding"
   findings_disposition:
     - finding_id: REV-R1-B-001
-      severity: Blocker # Blocker / Major / Suggestion
+      perspective: B
+      severity: Major
       director_disposition: "Adopted"
       resolved: true
 
+# 2. G4 Mock & Stub Inventory (Must be unreachable in production)
 mock_and_stub_inventory:
   - item_id: MOCK-001
     location: "tests/mocks/mock_service.py"
     prod_unreachable_verified: true
 
+# 3. G5 Independent QA Runs (Black-Box First Iron Law)
 g5_test_runs:
   - run_id: RUN-BB-001
+    recorded_at: "2026-11-03T00:00:00Z"
     phase_type: "black-box-first"
-    source_code_hidden_verified: true
-    candidate_id: "CAND-git-a1b2c3d"
-    command_executed: "pytest tests/blackbox/"
-    exit_code: 0
-    evidence_log_ref: "tests/evidence/run-bb-001.log"
+    tester_session: "QA-SESSION-01"
+    source_code_hidden_verified: false
+    candidate_id: "CAND-001"
+    command_executed: "pytest tests/"
+    exit_code: -1
+    evidence_log_ref: "o9_workspace/evidence/run-bb-001.log"
 
-defects:
-  - bug_id: BUG-001
-    related_ac: AC-001
-    severity: Blocker
-    status: "open" # open -> fixing -> ready-for-retest -> closed (Only QA can set closed!)
-    closed_by_tester: null
+# 4. Defects Ledger (Allowed closed statuses: closed, verified)
+defects: []
 
+# 5. Manual Verification Todos (For hardware/real-device UX unreachable by AI)
 manual_verification_todos: []
 ```
 
-## Template 4: `o9_workspace/rtm_acceptance.md` (G6 RTM & G7 Sign-Off)
+---
+
+## Template 4: `o9_workspace/rtm_acceptance.md` (G6 Full RTM Reconciliation & G7 Owner Decisions)
+
 ```markdown
-# G6 Requirements Traceability Matrix (RTM) & G7 Decisions
-- **Bound Baseline**: `BL-001` (`manifest_sha256: ...`) | **Candidate ID**: `CAND-...`
+# G6 Requirements Traceability Matrix (RTM) & G7 Sign-Off Decisions
+- **Project ID**: PRJ-2026-001
+- **Bound Baseline**: `BL-001`
+- **Candidate ID**: `CAND-001`
 
-## 1. Full Requirements Traceability Matrix
-| REQ-ID | AC-ID | Core/General | Implementation Commit/Path | Test Case ID | Evidence `run_id` | Coverage | Result |
+## 1. Full Requirements Traceability Matrix (RTM)
+| REQ-ID | AC-ID | Importance | Code Ref | Test Case ID | Evidence `run_id` | Coverage | Result |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `REQ-001` | `AC-001` | `core` | | `BB-001` | `RUN-BB-001` | `covered` | `passed` |
+| `REQ-001` | `AC-001` | `core` | `src/` | `BB-001` | `RUN-BB-001` | `covered` | `passed` |
 
-## 2. G6 Technical Acceptance & Independent Audit Conclusion
-- **Director Verdict**: [ Passed / Conditional / Failed ]
-- **Independent Auditor Verification (Mandatory if Director coded or L-Track)**:
+## 2. Conditions Ledger (No Blockers Allowed)
+- None
 
-## 3. G7 Owner's Three Decoupled Decisions
-1. **Sign-Off**: [ Approved / Rework ]
-2. **Release Authorization**: [ Hold / Authorized for Prod Release ]
-3. **Ownership & License**: [ MIT / Internal / Archived ]
+## 3. G6 Technical Acceptance & Independent Audit Verdict
+- **Director Verdict**: `passed`
+- **Independent Auditor Verdict**: `passed`
+
+## 4. G7 Owner's Three Decoupled Decisions
+- **Decision 1 (Sign-Off)**: `pending`
+- **Decision 2 (Release Authorization)**: `hold`
+- **Decision 3 (Ownership & License)**: `MIT`
 ```
 
 ---

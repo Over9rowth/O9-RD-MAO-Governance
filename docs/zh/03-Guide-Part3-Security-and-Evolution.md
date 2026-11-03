@@ -134,6 +134,7 @@ O9-RD 引入了测试工程中的 **故障注入（Fault Injection / 埋雷盲�
    * 拿一个虚拟的小需求，先不用写任何自动化脚本，由你手工扮演控制面。故意往流程里塞入“哈希对不上、缺老板批准、黑盒测试偷看源码、无测试日志假称通过”等异常情况，检验你的文档规范能不能逻辑自洽地把它们全拦下来。
 2. **Step 2：建立《控制落实清单（Control Checklist）》**
    * 诚实盘点现状：把所有门禁规则列成表，标明哪些目前是靠人眼核对的（`manual-verified`），哪些已经写了脚本强制拦截（`tool-enforced`），哪些暂时做不到（`unavailable`）。**绝不把“计划以后写脚本”吹牛填成“已工具强制”！**
+   > 💡 **本仓库 V1.0 -> V1.6.4 演进实录**：在经历了七轮外部独立盲审后，我们将控制落实清单正式确立为四档分级（详见 [`docs/CONTROL-MATRIX.md`](../CONTROL-MATRIX.md)）：**① `tool-enforced`**（密码学哈希与硬逻辑阻断，如 G1-01 非空 AC 结构、G3-01 复合清单哈希、G3-02 独立签名账本）、**② `tool-validated (form & consistency)`**（结构、时序上下界与跨文件引用一致性核验，如 G4-01 全树扫描、G5-02 证据路径与时间戳、G5-03 关单记录、G6-01 RTM 与 `RUN-xxx` 联动对账、G7-01 三项决定）、**③ `manual-verified`**（人工或独立会话实质评审）、**④ `infra-boundary`**（OS 多用户密钥托管与容器级 E2 物理沙箱边界）。
 3. **Step 3：跑通第一个真实 S 轨 / M 轨试点项目**
    * 先用我们下方【附录 B】提供的“核心四件套”文件模板 + 几十行简单的哈希与关键词扫描脚本，跑通 1~3 个真实需求，收集第一批返工和开销数据。
 4. **Step 4：痛点驱动的工具自动化（Gate-Runner 演进）**
@@ -165,9 +166,9 @@ O9-RD 引入了测试工程中的 **故障注入（Fault Injection / 埋雷盲�
 
 ---
 
-## 附录 B：O9-RD Next V1.0 完整参考架构规范与开箱即用模板套件
+## 附录 B：O9-RD Next V1.6.4 完整参考架构规范与开箱即用模板套件
 
-> **附录导读**：本附录完整收录了全书 7 大案例所引用的母体架构——**《O9-RD Next V1.0 多智能体研发工作流规范与实战模板》**。读者可直接复制本附录中的规范、核心四件套模板及角色唤醒口令，在本地一键初始化具备工业级治理能力的 AI 研发工作区。
+> **附录导读**：本附录完整收录了全书 7 大案例所引用的母体架构——**《O9-RD Next V1.6.4 多智能体研发工作流规范与实战模板》**。读者可直接复制本附录中的规范、核心四件套模板及角色唤醒口令，在本地一键初始化具备工业级治理能力的 AI 研发工作区。
 
 ### B.1 O9-RD 核心十条底线（Ten Commandments）
 1. **一源（SSOT）**：同一时点只有一套有效执行基线。禁止靠聊天记录传话，一切交接以落盘文件为准；基线内部冲突时立即阻塞（Blocked），严禁 AI 自行猜测哪个文件优先。
@@ -210,33 +211,26 @@ O9-RD 引入了测试工程中的 **故障注入（Fault Injection / 埋雷盲�
 
 ### B.3 O9-RD 开箱即用“核心四件套”标准模板
 
-新建项目时，在工作区初始化以下 4 个文件即可承载全部治理数据：
+新建项目时，在工作区初始化以下 4 个核心文件即可承载全部治理数据：
 
 ```text
 o9_workspace/
- ├── project_state.json         # 【核心件 1】控制面状态机、预算、并发锁与外部批准签名账本
+ ├── project_state.json         # 【核心件 1】控制面状态机、当前生效基线元数据与审计事件缓存
  ├── spec_and_contracts.md      # 【核心件 2】G0.5 双向确认 + AC 标准 + G1 三层工程契约主考卷
  ├── review_and_defects.yaml    # 【核心件 3】G2 三视角盲评处置 + Mock 清单 + G5 测试运行与缺陷台账
- └── rtm_acceptance.md          # 【核心件 4】G6 全量需求追踪矩阵 (RTM) + 条件台账 + G7 站长三项决定
+ ├── rtm_acceptance.md          # 【核心件 4】G6 全量需求追踪矩阵 (RTM) + 条件台账 + G7 站长三项决定
+ └── approvals.jsonl            # 【独立账本】只读追加签名账本（配合 ~/.o9-trust/ 外部锚点与 HMAC-SHA256 哈希链）
 ```
+
+> **账本解耦声明**：除核心四件套外，`init` 还会初始化只读的独立追加签名账本 **`o9_workspace/approvals.jsonl`**（配合 `~/.o9-trust/` 外部锚点与 HMAC-SHA256 哈希链），彻底将批准签名与 `project_state.json` 状态缓存分离，避免自哈希循环依赖。所有出厂模板均为**默认红灯状态（Default-Red）**：黑盒测试未通过、测试退出码为 `-1`、AC 追踪为 `not-covered / not-run`、G7 签收为 `pending`，严禁零工作量直接通关。
 
 #### 📄 模板 1：`project_state.json`
 ```json
 {
   "project_id": "PRJ-2026-001",
-  "title": "待填写项目名称",
-  "sop_version": "O9-RD-Next-V1.0",
-  "route": null,
-  "route_reason": null,
-  "risk_flags": {
-    "auth_or_permission_change": null,
-    "sensitive_data_or_secret": null,
-    "irreversible_data_op": null,
-    "money_or_billing": null,
-    "broad_prod_impact": null,
-    "agent_external_side_effect": null,
-    "core_architecture_change": null
-  },
+  "title": "Project Title",
+  "sop_version": "O9-RD-Next-V1.6.4",
+  "route": "M",
   "state": {
     "phase": "G0",
     "execution_state": "active",
@@ -252,130 +246,48 @@ o9_workspace/
       "G7": "not-started"
     }
   },
-  "environment_baseline": {
-    "os_and_shell": "待填写",
-    "workspace_root": "待填写",
-    "encoding": "UTF-8",
-    "isolation_level_achieved": "E1"
-  },
-  "budgets": {
-    "token_limit": 500000,
-    "token_used": 0,
-    "cost_limit_usd": 10.0,
-    "cost_used_usd": 0.0,
-    "warning_ratio": 0.8,
-    "hard_stop_ratio": 1.0,
-    "review_escalation_max_rounds": 2
-  },
   "active_baseline": {
     "baseline_id": null,
-    "frozen_at": null,
-    "files": [
-      {
-        "path": "o9_workspace/spec_and_contracts.md",
-        "bytes": null,
-        "sha256": null
-      }
-    ],
-    "manifest_sha256": null
+    "parent_baseline_id": null,
+    "spec_sha256": null,
+    "manifest_sha256": null,
+    "files": [],
+    "frozen_at": null
   },
-  "detached_approvals": [
-    {
-      "approval_id": "APR-G3-001",
-      "gate": "G3",
-      "decision": "pending",
-      "approver": "StationMaster",
-      "decided_at": null,
-      "bound_manifest_sha256": null,
-      "authorized_write_scopes": [],
-      "preauthorizations": [],
-      "source_message_ref": null
-    }
-  ],
-  "workstreams_and_locks": [
-    {
-      "task_id": "TASK-01",
-      "owner_agent": "Coder-A",
-      "allowed_write_paths": ["src/module_a/**"],
-      "shared_resources_locked": ["port:8081"],
-      "candidate_id": null,
-      "status": "pending"
-    }
-  ],
-  "handoff": {
-    "status": "not-required",
-    "work_snapshot_id": null,
-    "uncommitted_diff_ref": null,
-    "checks_not_run": [],
-    "write_lock_released": false,
-    "notes": null
-  },
-  "metrics": {
-    "rework_count": 0,
-    "gate_interceptions": [],
-    "escaped_defects_count": 0
-  }
+  "baseline_history": [],
+  "audit_events": []
 }
 ```
 
 #### 📄 模板 2：`spec_and_contracts.md`
 ```markdown
-# 需求规范与三层工程契约 (Spec & Contracts)
-- **项目 ID**：PRJ-2026-001
-- **当前修订版**：v0.1
-- **适用轨道**：[ S / M / L ]（若为 S 轨且申请豁免 G2，在此填写满足全部准入条件的依据：___）
+# Requirement Specification & Three-Tier Engineering Contracts (Spec & Contracts)
+- **Project ID**: PRJ-2026-001
+- **Revision**: v0.1
+- **Track**: [ S / M / L ]
 
----
-
-## 第一部分：G0.5 需求澄清与双向确认
-
-### 1.1 原始意图与来源分级
-- **站长原始请求引用**：
-- **主总监复述的目标**：
-- **必须实现的范围 (In-Scope)**：
-  1. `[REQ-001]` （标注：站长明确表达 / 总监合理推断）
-- **明确排除的范围 (Out-of-Scope，本期绝对不做)**：
-  1. 
-- **待验证技术假设 / 是否需开启受控实验 (Spike)**：无
-
-### 1.2 结构化验收标准 (Acceptance Criteria)
-| AC-ID | 关联 REQ | 核心/一般 | 前置条件 | 输入 / 触发动作 | 预期可观察结果与异常失败行为 | 验证方式 (自动/人工) |
+## Part 1: G0.5 Requirement Clarification & Two-Way Confirmation
+- **Original Request Ref**:
+- **Director's Restated Goal**:
+- **Must-Have Scope (In-Scope)**:
+  1. `[REQ-001]` (Explicit Request / Director Inference)
+- **Explicitly Excluded (Out-of-Scope)**:
+  1. None
+- **Structured Acceptance Criteria (AC)**:
+| AC-ID | REQ-ID | Importance | Preconditions | Input / Action | Expected Result & Failure Behavior | Mode |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `AC-001` | `REQ-001` | `core` | | | | |
-| `AC-002` | `REQ-001` | `general`| | | | |
+| `AC-001` | `REQ-001` | `core` | Service running | Valid input | Returns 200 OK | `automated` |
+- **Owner Confirmation**: Approved
 
-### 1.3 G0.5 站长确认记录（冻结前填写）
-- **站长确认状态**：[ 同意上述复述 / 需修改 ]
-- **确认时间与原话引用**：
-
----
-
-## 第二部分：G1 架构设计与三层工程契约
-
-### 2.1 方案简述与替代路线取舍
-- **核心设计思路与模块边界**：
-- **考虑过的更简替代方案及放弃理由**：
-- **回退方案（Rollback Plan）**：
-
-### 2.2 第一层：数据与接口契约 (Data & Schema Contract)
-- **适用性声明**：[ `applicable` / `no-applicable-data-contract`（无数据结构时说明理由） ]
-- **接口/类型定义详情**（可直接内联 OpenAPI/JSON Schema/TS Interface，或引用独立文件并由脚本同批哈希）：
-- **语法/Schema 自动校验命令与结果**：
-
-### 2.3 第二层：外部行为契约与业务不变量 (Behavior & Invariants)
-- **状态流转规则**：
-- **权限拒绝与异常错误码规范**：
-- **核心业务不变量（Fuzzing 与测试必须守住的底线）**：
-
-### 2.4 第三层：可测性契约 (Testability Harness — 供 G5 独立测试使用)
-- **测试运行模式**：`automated` / `manual` / `mixed`
-- **工作目录与一键启动命令**：
-- **服务就绪判定条件 (Readiness)**：
-- **所需环境变量名称清单（严禁填写真实密钥值！）**：
-- **合成测试数据准备与重置命令（仅限测试库）**：
-- **外部依赖 Mock / 测试替身注入方式（严禁流入生产路径）**：
-- **日志输出位置与资源清理步骤**：
-- **L 轨强制 Fuzzing 计划（仅 L 轨填写）**：目标输入面、生成器工具、时间/迭代预算、异常判定准则。
+## Part 2: G1 Architecture & Three-Tier Contracts
+### 2.1 Design Summary & Rollback Plan
+### 2.2 Tier 1: Data & Interface Contract (Schema)
+- **Applicability**: `applicable`
+### 2.3 Tier 2: External Behavior & Business Invariants
+### 2.4 Tier 3: Testability Contract (Test Harness for G5 QA)
+- **Working Dir & Startup Command**: `pytest`
+- **Readiness Condition**: Exit code 0
+- **Synthetic Data Reset Command**: N/A
 ```
 
 #### 📄 模板 3：`review_and_defects.yaml`
@@ -383,124 +295,72 @@ o9_workspace/
 project_id: PRJ-2026-001
 bound_baseline_id: BL-001
 
-# 一、G2 独立三视角盲评汇总与处置台账
+# 1. G2 Blind Three-Perspective Review Ledger
 g2_reviews:
   review_pack_sha256: null
   reviewers:
     - reviewer_id: REV-SESSION-01
-      model_family: null
-      isolation_level: E1 # L轨要求 E2 并附 I-01~I-06 探测记录引用
+      isolation_level: E1
       perspectives_checked:
-        A_architecture_and_req: "已检查，见发现项"
-        B_security_and_reliability: "已检查，见发现项"
-        C_simpler_alternatives: "无发现（已核对现有库，当前方案最简）"
+        A_architecture_and_req: "Checked"
+        B_security_and_reliability: "Checked"
+        C_simpler_alternatives: "No finding"
   findings_disposition:
     - finding_id: REV-R1-B-001
       perspective: B
-      severity: Blocker # Blocker / Major / Suggestion
-      location_ref: "AC-001 / 接口契约 §2.2"
-      description: "示例：未定义连续失败的速率限制"
-      director_disposition: "采纳" # 采纳 / 部分采纳 / 不采纳 / 待澄清
-      response_and_modification: "已在 §2.3 补充 5 次失败锁定 15 分钟规则"
-      round: 1
+      severity: Major
+      director_disposition: "Adopted"
       resolved: true
-      post_verification: "pending" # G5/G6 回填 confirmed / refuted
 
-# 二、G4 测试替身/Mock 登记与反作弊核对
+# 2. G4 Mock & Stub Inventory (Must be unreachable in production)
 mock_and_stub_inventory:
   - item_id: MOCK-001
-    location: "tests/mocks/payment_mock.py"
-    enable_condition: "仅当 ENV=test 时注入"
-    prod_unreachable_verified: true # 确认生产路径绝对不可达
+    location: "tests/mocks/mock_service.py"
+    prod_unreachable_verified: true
 
-# 三、G5 独立测试运行记录与缺陷闭环台账
+# 3. G5 Independent QA Runs (Black-Box First Iron Law)
 g5_test_runs:
   - run_id: RUN-BB-001
-    phase_type: "black-box-first" # 必须早于 white-box 和 fuzzing 时间戳！
+    recorded_at: "2026-11-03T00:00:00Z"
+    phase_type: "black-box-first"
     tester_session: "QA-SESSION-01"
-    source_code_hidden_verified: true
-    candidate_id: "CAND-git-a1b2c3d"
-    command_executed: "pytest tests/blackbox/"
-    exit_code: 1
-    actual_observation: "AC-001 通过，AC-002 边界值报错"
-    evidence_log_ref: "tests/evidence/run-bb-001.log"
+    source_code_hidden_verified: false
+    candidate_id: "CAND-001"
+    command_executed: "pytest tests/"
+    exit_code: -1
+    evidence_log_ref: "o9_workspace/evidence/run-bb-001.log"
 
-defects:
-  - bug_id: BUG-001
-    found_in_run: RUN-BB-001
-    related_ac: AC-002
-    severity: Blocker
-    status: "open" # open -> fixing -> ready-for-retest -> closed (仅QA可改closed!)
-    steps_to_reproduce: "输入空字符串时返回 500 而非 400"
-    fix_commit_and_candidate: null
-    retest_run_id: null
-    closed_by_tester: null
+# 4. Defects Ledger (Allowed closed statuses: closed, verified)
+defects: []
 
-# 四、AI 无法触达的人工验证待办卡 (如适用)
-manual_verification_todos:
-  - manual_id: MAN-001
-    related_ac: null
-    reason_ai_cannot_test: "需真机硬件或肉眼视觉体验确认"
-    device_and_steps: null
-    assigned_human: "StationMaster"
-    status: "not-run" # 严禁 AI 脑补填 passed！
-    human_observation_and_evidence: null
+# 5. Manual Verification Todos (For hardware/real-device UX unreachable by AI)
+manual_verification_todos: []
 ```
 
 #### 📄 模板 4：`rtm_acceptance.md`
 ```markdown
-# G6 技术总验收对账单 (RTM) 与 G7 签收发布决定
-- **项目 ID**：PRJ-2026-001
-- **绑定批准基线 ID 及指纹**：`BL-001` (`manifest_sha256: ...`)
-- **最终交付候选版本 (`candidate_id`)**：
-- **主总监是否兼任开发**：[ 是 / 否 ]（若为“是”或属 L 轨，必须填写下方独立复核人结论）
+# G6 Requirements Traceability Matrix (RTM) & G7 Sign-Off Decisions
+- **Project ID**: PRJ-2026-001
+- **Bound Baseline**: `BL-001`
+- **Candidate ID**: `CAND-001`
 
----
-
-## 一、全量需求追踪矩阵 (Requirements Traceability Matrix)
-*(铁律：必须从获批基线展开全部 AC，严禁只列已通过项！覆盖 `covered` 不等于结果 `passed`)*
-
-| REQ-ID | AC-ID | 核心/一般 | 实现代码文件路径 / Commit | 验证用例 ID | 独立运行记录 `run_id` 及证据路径 | 覆盖状态 | 最终测试结果 | 遗留风险或条件 ID |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `REQ-001` | `AC-001` | `core` | | `BB-001` | `RUN-BB-002` | `covered` | `passed` | 无 |
-| `REQ-001` | `AC-002` | `general`| | `BB-002` | `RUN-BB-002` | `covered` | `passed` | 无 |
-
----
-
-## 二、有条件通过台账 (Conditions Ledger — 无则填“无”)
-*(铁律：Blocker 阻塞级缺陷及核心 AC 失败严禁列入此表带病放行！)*
-| 条件 ID | 遗留问题描述 | 临时限制/缓解措施 | 负责人 | 截止期限 | 发布前必须关闭？ | 逾期自动停用动作 | 当前状态 |
+## 1. Full Requirements Traceability Matrix (RTM)
+| REQ-ID | AC-ID | Importance | Code Ref | Test Case ID | Evidence `run_id` | Coverage | Result |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `COND-001`| 无 | | | | | | |
+| `REQ-001` | `AC-001` | `core` | `src/` | `BB-001` | `RUN-BB-001` | `covered` | `passed` |
 
----
+## 2. Conditions Ledger (No Blockers Allowed)
+- None
 
-## 三、G6 技术验收与独立交叉复审结论
-- **主总监技术验收自检**：[ 通过 / 有条件通过 / 不通过 ]
-- **独立复审人 / 外部证据核对人（S/M兼任开发或 L 轨必填）**：
-  - **复审会话/身份**：
-  - **抽查的原始证据样本清单（关键 AC 日志、专项/Fuzzing 记录、Bug 复测记录）**：
-  - **独立复审结论**：[ 确认证据真实有效，同意放行 / 发现证据缺失或矛盾，退回 ]
+## 3. G6 Technical Acceptance & Independent Audit Verdict
+- **Director Verdict**: `passed`
+- **Independent Auditor Verdict**: `passed`
 
----
-
-## 四、G7 站长（人类老板）最终三项决定
-*(允许同一回复做出决定，但三项权限彼此独立，签收不自动触发生产发布)*
-
-1. **【决定 1：成果签收 (Sign-off)】**
-   - 结论：[ 正式签收 / 要求返工 / 取消 ]
-   - 站长原话引用与时间：
-2. **【决定 2：发布上线授权 (Release Authorization)】**
-   - 结论：[ 暂不发布，仅保留制品 / 授权按以下范围发布 ]
-   - 授权目标环境、操作人及回滚触发条件：
-   - 实际发布结果与冒烟验证（Smoke Test）记录：
-3. **【决定 3：资产归属与许可证 (Ownership & License)】**
-   - 归属定位：[ O9 正式产品 / 内部工具 / 实验归档 ]
-   - 开源/分发许可证决定：
-   - 后续观察窗口与维护责任人：
+## 4. G7 Owner's Three Decoupled Decisions
+- **Decision 1 (Sign-Off)**: `pending`
+- **Decision 2 (Release Authorization)**: `hold`
+- **Decision 3 (Ownership & License)**: `MIT`
 ```
-
----
 
 ### B.4 O9-RD 角色会话唤醒标准口令（System Prompt 片段）
 

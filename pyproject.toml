@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "o9-rd-governance"
+version = "1.6.4"
+description = "Verifiable Software Engineering Governance & Minimal Control Plane for Multi-Agent Coding Workflows"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "曾威长 (Over9rowth)" }]
+requires-python = ">=3.9"
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Over9rowth/O9-RD-MAO-Governance"
+Repository = "https://github.com/Over9rowth/O9-RD-MAO-Governance.git"
+
+[tool.setuptools]
+py-modules = ["gate_runner"]
+
+[project.scripts]
+o9-gate = "gate_runner:main"
