@@ -29,6 +29,9 @@ class TestGateRunnerV16(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.cwd = Path(self.tmp.name)
         self.ws = self.cwd / "o9_workspace"
+        # V1.6.1: the zero-file scan guard now applies to `check .` as well, so every
+        # temp repo gets one ordinary source file to scan (test_11 removes it on purpose).
+        (self.cwd / "app_main.py").write_text("def main():\n    return 0\n", encoding="utf-8")
 
     def tearDown(self):
         apr_log = self.ws / "approvals.jsonl"
@@ -72,7 +75,7 @@ class TestGateRunnerV16(unittest.TestCase):
     def test_00_version_is_v16(self):
         res = self.run_cli("--version")
         self.assertEqual(res.returncode, 0)
-        self.assertEqual(res.stdout.strip(), "O9-RD-Next-V1.6")
+        self.assertEqual(res.stdout.strip(), "O9-RD-Next-V1.6.1")
 
     # ---------------- G1-01 ----------------
     def test_01_g1_01_blocks_empty_or_acless_spec(self):
@@ -315,6 +318,106 @@ class TestGateRunnerV16(unittest.TestCase):
         self.assertNotIn("Phantom Bug Prevention", res_close.stdout)
 
         self.assertEqual(self.run_cli("check", ".", "--gate=G5").returncode, 0)
+
+    # ---------------- V1.6.1 closure tests ----------------
+    def test_11_g4_01_zero_file_scan_is_blocked_even_for_dot(self):
+        """G4-01: `scanned_files > 0` must hold regardless of how the target is spelled.
+
+        v1.6 exempted `check .` from the zero-file guard, which made the G4-01 row of
+        CONTROL-MATRIX false. Both spellings must now block, and --allow-empty-scan must
+        still pass but announce that it saw nothing.
+        """
+        self.bootstrap()
+        (self.cwd / "app_main.py").unlink()          # the repo now has zero code files
+
+        res_dot = self.run_cli("check", ".")
+        self.assertNotEqual(res_dot.returncode, 0)
+        self.assertIn("Zero code files scanned", res_dot.stdout)
+
+        res_path = self.run_cli("check", str(self.cwd))
+        self.assertNotEqual(res_path.returncode, 0)
+        self.assertIn("Zero code files scanned", res_path.stdout)
+
+        res_override = self.run_cli("check", ".", "--allow-empty-scan")
+        self.assertEqual(res_override.returncode, 0)
+        self.assertIn("[WARNING] empty scan accepted", res_override.stdout)
+
+    def test_12_r04_renamed_file_cannot_evade_the_scan(self):
+        """R04: the old SELF_TEST_FILES basename whitelist let `mv cheat.py confirm.py` pass."""
+        self.bootstrap()
+        cheat = self.cwd / "cheat.py"
+        cheat.write_text("# TODO: unimplemented\n", encoding="utf-8")
+        self.assertNotEqual(self.run_cli("check", ".").returncode, 0)
+
+        for decoy in ("confirm.py", "redteam.py", "test_gate_runner.py"):
+            cheat.rename(self.cwd / decoy)
+            res = self.run_cli("check", ".")
+            self.assertNotEqual(res.returncode, 0, f"renaming to {decoy} evaded the scan")
+            self.assertIn("ANTI-STUB BLOCKER", res.stdout)
+            (self.cwd / decoy).rename(cheat)
+
+    def test_13_r09c_g5_run_without_recorded_at_is_inadmissible(self):
+        """R09c: omitting `recorded_at` must not restore document-order fallback."""
+        self.bootstrap()
+        base = self.read_review()
+        start = base.index("g5_test_runs:")
+        end = base.index("defects:")
+        unstamped = (
+            "g5_test_runs:\n"
+            "  - run_id: RUN-OK\n"
+            "    exit_code: 0\n"
+            "    source_code_hidden_verified: true\n"
+            "    evidence_log_ref: \"o9_workspace/evidence/run-bb-001.log\"\n"
+        )
+        (self.ws / "review_and_defects.yaml").write_text(
+            base[:start] + unstamped + base[end:], encoding="utf-8"
+        )
+        res = self.run_cli("check", ".", "--gate=G5")
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("recorded_at", res.stdout)
+
+    def test_14_t2_trust_reset_leaves_a_signed_trace_and_archive_must_match(self):
+        """T2: the reset must be a signed, chained record -- and an unexplained archive blocks."""
+        self.run_cli("init")
+        self.assertEqual(self.run_cli("freeze").returncode, 0)
+        self.assertEqual(self.run_cli("trust-reset", PROJECT_ID).returncode, 0)
+
+        ledger = (self.ws / "approvals.jsonl").read_text(encoding="utf-8")
+        records = [json.loads(l) for l in ledger.splitlines() if l.strip()]
+        self.assertEqual(records[0]["type"], "TRUST_RESET")
+        self.assertEqual(records[0]["seq"], 1)
+        self.assertIn("archived_ledger_sha256", records[0])
+        self.assertIn("previous_key_fp", records[0])
+
+        self.assertEqual(self.run_cli("freeze").returncode, 0)
+        self.assertEqual(self.run_cli("check", ".").returncode, 0)
+
+        # Forge an extra archive the ledger knows nothing about -> must be refused.
+        bogus = self.ws / "approvals.jsonl.bak.19700101T000000Z"
+        bogus.write_text('{"type":"FREEZE"}\n', encoding="utf-8")
+        res = self.run_cli("check", ".")
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("Unrecorded trust-root reset", res.stdout)
+
+    def test_15_r01_deleting_the_anchor_is_no_longer_a_way_to_start_over(self):
+        """R01: the append-only registry must catch an anchor deletion that the ledger forgot."""
+        self.bootstrap()
+        trust_dir = Path.home() / ".o9-trust"
+        ws_id = hashlib.sha256(str(self.ws.resolve()).encode("utf-8")).hexdigest()[:16]
+        for anchor in list(trust_dir.glob(f"anchor_{ws_id}.sha256")):
+            os.chmod(anchor, 0o666)
+            anchor.unlink()
+        apr = self.ws / "approvals.jsonl"
+        os.chmod(apr, 0o666)
+        apr.write_text("", encoding="utf-8")
+
+        res_init = self.run_cli("init")
+        self.assertNotEqual(res_init.returncode, 0)
+        self.assertIn("Unrecorded trust-root reset (R01)", res_init.stdout)
+
+        res_check = self.run_cli("check", ".")
+        self.assertNotEqual(res_check.returncode, 0)
+        self.assertIn("Fail-Closed (R01)", res_check.stdout)
 
 
 if __name__ == "__main__":

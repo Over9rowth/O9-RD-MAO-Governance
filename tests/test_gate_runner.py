@@ -16,6 +16,9 @@ class TestGateRunnerV15(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.cwd = Path(self.tmp.name)
+        # V1.6.1: the zero-file scan guard now applies to `check .` as well, so every
+        # temp repo gets one ordinary source file to scan.
+        (self.cwd / "app_main.py").write_text("def main():\n    return 0\n", encoding="utf-8")
 
     def tearDown(self):
         apr_log = self.cwd / "o9_workspace" / "approvals.jsonl"
@@ -221,7 +224,13 @@ class TestGateRunnerV15(unittest.TestCase):
             anchor_file.unlink()
         res_chk_no_anchor = self.run_cli("check", ".")
         self.assertNotEqual(res_chk_no_anchor.returncode, 0)
-        self.assertIn("Fail-Closed (C-02)", res_chk_no_anchor.stdout)
+        self.assertIn("Fail-Closed", res_chk_no_anchor.stdout)
+        # V1.6.1: with the append-only registry in the verification path, a deleted anchor
+        # is now caught one layer earlier (R01) instead of by C-02 -- either block is valid.
+        self.assertTrue(
+            "Fail-Closed (R01)" in res_chk_no_anchor.stdout
+            or "Fail-Closed (C-02)" in res_chk_no_anchor.stdout
+        )
 
         # Restore anchor
         anchor_file.write_text(saved_anchor, encoding="utf-8")

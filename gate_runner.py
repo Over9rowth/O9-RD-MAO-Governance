@@ -34,7 +34,13 @@ from pathlib import Path
 from datetime import datetime, timezone
 from contextlib import contextmanager
 
-VERSION = "O9-RD-Next-V1.6"
+VERSION = "O9-RD-Next-V1.6.1"
+
+# V1.6.1 / R10: the ledger lock lives OUTSIDE the audited workspace so that a
+# same-UID agent cannot permanently DoS signing by pre-creating the lock directory,
+# and stale locks are reclaimed automatically instead of bricking the project.
+LOCK_WAIT_SECONDS = 2.0
+LOCK_STALE_SECONDS = 4.0
 
 def resolve_workspace() -> Path:
     return Path("o9_workspace").resolve()
@@ -58,7 +64,18 @@ CODE_EXTENSIONS = {
 }
 # A6 Fix: removed 'tests' from SKIP_DIRS so production stubs hidden in tests/ are caught (test_gate_runner.py is excluded by filename)
 SKIP_DIRS = {".git", "o9_workspace", "docs", "prompts", "templates", "__pycache__", "node_modules", ".venv"}
-SELF_TEST_FILES = {"test_gate_runner.py", "test_v16_controls.py", "redteam.py", "redteam2.py", "confirm.py"}
+
+# V1.6.1 / R04: never exempt a file by BARE FILENAME (that let `mv cheat.py confirm.py`
+# walk straight through the gate). Only the two conformance test files that ship with
+# this tool are exempt, and only at their exact ABSOLUTE path. A project's own
+# `tests/` directory stays fully scanned, so hiding stubs there is still caught
+# (that is what A6 asked for).
+SELF_TEST_BASENAMES = ("test_gate_runner.py", "test_v16_controls.py")
+
+
+def self_test_paths() -> set:
+    root = Path(__file__).resolve().parent / "tests"
+    return {(root / name).resolve() for name in SELF_TEST_BASENAMES}
 
 DEFAULT_STATE_JSON = {
     "project_id": "PRJ-2026-001",
@@ -159,29 +176,72 @@ def require_signing_secret(explicit_key: str = None) -> str:
         sys.exit(1)
     return secret.strip()
 
+def get_lock_dir(ws: Path) -> Path:
+    """V1.6.1 / R10: lock path is derived from the workspace but stored outside it."""
+    locks = get_trust_dir() / "locks"
+    try:
+        locks.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    ws_id = hashlib.sha256(str(ws.resolve()).encode("utf-8")).hexdigest()[:16]
+    return locks / f"lock_{ws_id}"
+
+
+def _lock_age_seconds(lock_dir: Path) -> float:
+    try:
+        return max(0.0, time.time() - lock_dir.stat().st_mtime)
+    except Exception:
+        return 0.0
+
+
+def _lock_owner_alive(lock_dir: Path) -> bool:
+    """Best-effort liveness probe. On Windows we deliberately do NOT call os.kill(pid, 0)
+    (it would terminate the process); staleness there is judged by age alone."""
+    if os.name == "nt":
+        return True
+    try:
+        pid = int((lock_dir / "owner").read_text(encoding="utf-8").split(":")[0])
+    except Exception:
+        return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 @contextmanager
 def workspace_lock(ws: Path):
-    """C-09 / A11b Fix: Cross-platform atomic directory lock to serialize concurrent ledger writes."""
-    lock_dir = ws / ".o9_ledger.lock"
-    deadline = time.time() + 10.0
+    """C-09 / A11b + V1.6.1 R10 Fix: inter-process lock with owner pid and stale reclaim."""
+    lock_dir = get_lock_dir(ws)
+    deadline = time.time() + LOCK_WAIT_SECONDS
     acquired = False
     while time.time() < deadline:
         try:
             os.mkdir(lock_dir)
+            try:
+                (lock_dir / "owner").write_text(f"{os.getpid()}:{time.time():.0f}", encoding="utf-8")
+            except Exception:
+                pass
             acquired = True
             break
         except FileExistsError:
+            age = _lock_age_seconds(lock_dir)
+            if age > LOCK_STALE_SECONDS or not _lock_owner_alive(lock_dir):
+                print(f"[WARN] Reclaiming stale ledger lock (age={age:.1f}s, owner={lock_dir / 'owner'}).")
+                shutil.rmtree(lock_dir, ignore_errors=True)
+                continue
             time.sleep(0.02)
     if not acquired:
-        print("[BLOCKED] Timeout waiting for workspace ledger lock (.o9_ledger.lock)!")
+        print(
+            f"[BLOCKED] Could not acquire the ledger lock within {LOCK_WAIT_SECONDS:.0f}s ({lock_dir}). "
+            "If no other gate_runner process is running, delete that directory and retry."
+        )
         sys.exit(1)
     try:
         yield
     finally:
-        try:
-            os.rmdir(lock_dir)
-        except Exception:
-            pass
+        shutil.rmtree(lock_dir, ignore_errors=True)
 
 def get_external_anchor_path(ws: Path) -> Path:
     ws_abs = str(ws.resolve())
@@ -243,14 +303,28 @@ def sync_external_anchor(ws: Path, secret: str, seq: int):
         sys.exit(1)
 
 def verify_external_anchor(ws: Path, secret: str, records: list, expected_fp: str = None):
-    """C-02 / A1 / A2 / A10b Fix: Fail-closed when anchor is missing while ledger/project is active."""
+    """C-02 / A1 / A2 / A10b + V1.6.1 R01/T1: fail-closed on a missing or inconsistent trust root."""
     anchor_file = get_external_anchor_path(ws)
     key_fp = compute_key_fp(secret)
     if expected_fp and key_fp != expected_fp:
         print(f"[BLOCKER] Key fingerprint '{key_fp}' does not match --expect-key-fp '{expected_fp}'!")
         sys.exit(1)
 
+    # V1.6.1 / R01: the append-only registry is now part of the verification path.
+    # A workspace the registry already knows must still have its anchor; deleting
+    # ~/.o9-trust/anchor_*.sha256 alone can no longer look like a green-field project.
+    history = trust_index_rows_for(ws)
+    anchored = [r for r in history if r.get("key_fp")]
+    has_reset_record = any(r.get("type") == "TRUST_RESET" for r in records)
+
     if not anchor_file.exists():
+        if anchored:
+            print(
+                "[BLOCKER] Fail-Closed (R01): ~/.o9-trust/index.tsv knows this workspace but its "
+                f"anchor file '{anchor_file.name}' is missing! An intentional reset must be announced "
+                "with the sanctioned 'trust-reset' subcommand."
+            )
+            sys.exit(1)
         if records:
             print("[BLOCKER] Fail-Closed (C-02): External trust anchor (~/.o9-trust/) is missing while approvals.jsonl is non-empty! Suspected anchor deletion attack.")
             sys.exit(1)
@@ -267,6 +341,18 @@ def verify_external_anchor(ws: Path, secret: str, records: list, expected_fp: st
 
     if key_fp != pinned_fp:
         print("[BLOCKER] Signing key fingerprint mismatch against pinned external trust root!")
+        sys.exit(1)
+
+    # V1.6.1 / T1: a key fingerprint that the registry has seen before, but that the
+    # anchor no longer pins, is only legitimate if a signed TRUST_RESET says so.
+    stale_fps = sorted({r.get("key_fp") for r in history
+                        if r.get("key_fp") and r.get("key_fp") != pinned_fp})
+    if stale_fps and not has_reset_record:
+        print(
+            f"[BLOCKER] Key history conflict (G3-03): index.tsv recorded fingerprint(s) {stale_fps} "
+            f"for this workspace, the anchor now pins '{pinned_fp}', and approvals.jsonl carries no "
+            "TRUST_RESET record. Use 'trust-reset' for an intentional rotation."
+        )
         sys.exit(1)
 
     if len(records) < pinned_seq:
@@ -401,18 +487,23 @@ def parse_timestamp(value):
     return dt
 
 def select_latest_g5_run(runs: list):
-    """V1.6 / G5-02: Select the chronologically latest QA run by `recorded_at`.
+    """V1.6.1 / R09c: strict chronological selection -- `recorded_at` is now MANDATORY.
 
-    Falls back to document order only when no run declares `recorded_at`
-    (legacy v1.5 workspaces).
+    v1.6 fell back to document order whenever no run declared `recorded_at`, so an
+    agent could obtain "last one wins" behaviour simply by omitting the field. The
+    fallback is gone: an unstamped run makes the whole evidence ledger inadmissible.
+    Returns (run, error_message).
     """
     if not runs:
-        return None
+        return None, "no `g5_test_runs` item found"
+    missing = [str(r.get("run_id")) for r in runs if parse_timestamp(r.get("recorded_at")) is None]
+    if missing:
+        return None, (
+            f"g5 run(s) {missing} have a missing or unparseable `recorded_at`; "
+            "an unstamped QA run cannot be ordered chronologically"
+        )
     stamped = [(parse_timestamp(r.get("recorded_at")), idx, r) for idx, r in enumerate(runs)]
-    usable = [t for t in stamped if t[0] is not None]
-    if usable:
-        return max(usable, key=lambda t: (t[0], t[1]))[2]
-    return runs[-1]
+    return max(stamped, key=lambda t: (t[0], t[1]))[2], None
 
 def spec_ac_rows(spec_text: str) -> list:
     """V1.6 / G1-01: Structured `AC-xxx` rows are markdown table rows only."""
@@ -516,10 +607,12 @@ def read_trust_index() -> list:
     return rows
 
 def upsert_trust_index(ws: Path, project_id: str, key_fp: str = "", seq: int = 0):
-    """V1.6 / G3-03: records/refreshes this workspace entry in `index.tsv`.
+    """V1.6.1 / G3-03: APPEND-ONLY trust registry.
 
-    Updates the row for this workspace IN PLACE and preserves any pre-existing
-    or legacy rows verbatim, so the registry never destroys unrelated history.
+    v1.6 rewrote this workspace's row in place, which silently destroyed the
+    historical `key_fp` -- turning the registry into a "current snapshot" with no
+    forensic value. It is now an append-only log: a key rotation leaves an auditable
+    trail, and `verify_external_anchor` cross-checks it on every run.
     """
     ws_abs = str(ws.resolve())
     ws_id = hashlib.sha256(ws_abs.encode("utf-8")).hexdigest()[:16]
@@ -527,23 +620,14 @@ def upsert_trust_index(ws: Path, project_id: str, key_fp: str = "", seq: int = 0
     lines = []
     if idx.exists():
         try:
-            lines = idx.read_text(encoding="utf-8", errors="ignore").splitlines()
+            lines = [l for l in idx.read_text(encoding="utf-8", errors="ignore").splitlines()
+                     if not l.startswith("#")]
         except Exception:
             lines = []
     new_line = "\t".join([ws_id, ws_abs, project_id, key_fp or "", str(seq), now_iso()])
-    out, replaced = [], False
-    for line in lines:
-        fields = line.split("\t")
-        if line.strip() and not line.startswith("#") and fields[0] == ws_id:
-            if not replaced:
-                out.append(new_line)
-                replaced = True
-            continue
-        out.append(line)
-    if not replaced:
-        out.append(new_line)
-    if not any(l.startswith("#") for l in out):
-        out.insert(0, "# O9-RD local trust registry: ws_id<TAB>workspace<TAB>project_id<TAB>key_fp<TAB>seq<TAB>updated_at")
+    out = list(lines)
+    out.append(new_line)
+    out.insert(0, "# O9-RD local trust registry (append-only): ws_id<TAB>workspace<TAB>project_id<TAB>key_fp<TAB>seq<TAB>updated_at")
     try:
         if idx.exists():
             set_writable(idx)
@@ -552,6 +636,21 @@ def upsert_trust_index(ws: Path, project_id: str, key_fp: str = "", seq: int = 0
         # The authoritative trust root is still the HMAC anchor + ledger chain; the
         # local registry is defence-in-depth, so degrade loudly instead of bricking init.
         print(f"[WARN] Could not update local registry {TRUST_INDEX_NAME}: {e}")
+
+
+def trust_index_rows_for(ws: Path) -> list:
+    """V1.6.1 / G3-03: every historical registry row for this workspace."""
+    ws_id = hashlib.sha256(str(ws.resolve()).encode("utf-8")).hexdigest()[:16]
+    return [r for r in read_trust_index() if r.get("ws_id") == ws_id]
+
+
+def anchored_history_for(ws: Path) -> list:
+    """V1.6.1 / R01: registry rows that prove an anchor was actually established.
+
+    `init` registers the workspace with an empty `key_fp` (no anchor yet), so only rows
+    carrying a real fingerprint count as evidence that a trust root once existed.
+    """
+    return [r for r in trust_index_rows_for(ws) if r.get("key_fp")]
 
 def read_project_id_file(ws: Path):
     """V1.6 / G3-03: reads `.o9_project_id` (None when absent/corrupt)."""
@@ -616,6 +715,23 @@ def cmd_trust_reset(confirm_token: str, key=None):
         anchor_file = get_external_anchor_path(ws)
         archived = []
 
+        # V1.6.1 / T2: capture what is about to be replaced, so the reset itself can be
+        # recorded as a signed fact rather than leaving an indistinguishable empty ledger.
+        previous_key_fp = ""
+        if anchor_file.exists():
+            try:
+                bits = anchor_file.read_text(encoding="utf-8").strip().split(":")
+                if len(bits) >= 3:
+                    previous_key_fp = bits[2]
+            except Exception:
+                previous_key_fp = ""
+        archived_ledger_sha256 = ""
+        if apr_log.exists() and apr_log.stat().st_size > 0:
+            try:
+                archived_ledger_sha256 = sha256_file(apr_log)
+            except Exception:
+                archived_ledger_sha256 = ""
+
         if anchor_file.exists():
             set_writable(anchor_file)
             anchor_bak = anchor_file.with_name(f"{anchor_file.name}.bak.{stamp}")
@@ -659,8 +775,31 @@ def cmd_trust_reset(confirm_token: str, key=None):
         })
         save_state(ws, state)
         ensure_project_id(ws, project_id)
-        upsert_trust_index(ws, project_id, compute_key_fp(secret), 0)
+
+        # V1.6.1 / T2 Fix: the reset is the FIRST record of the new chain, so it is signed,
+        # chained, and permanently visible to `check`. Re-establishes the external anchor too.
+        new_key_fp = compute_key_fp(secret)
+        reset_seq = 1
+        reset_mac = compute_hmac(secret, (
+            f"TRUST_RESET:{reset_seq}:{archived_ledger_sha256}:"
+            f"{previous_key_fp}:{new_key_fp}:GENESIS"
+        ))
+        append_ledger_record(ws, {
+            "seq": reset_seq,
+            "type": "TRUST_RESET",
+            "project_id": project_id,
+            "archived_ledger_sha256": archived_ledger_sha256,
+            "previous_key_fp": previous_key_fp,
+            "new_key_fp": new_key_fp,
+            "archived_files": archived,
+            "prev_hmac": "GENESIS",
+            "at": now_iso(),
+            "hmac": reset_mac,
+        }, secret, reset_seq)
+
+        upsert_trust_index(ws, project_id, new_key_fp, reset_seq)
         print(f"[TRUST RESET] Project '{project_id}': archived {archived if archived else 'nothing'} and re-established an empty trust root.")
+        print(f"[TRUST RESET] Signed TRUST_RESET record #1 written (previous_key_fp={previous_key_fp or 'n/a'}).")
         print("[NEXT] Run 'init' (if the workspace was wiped) then 'freeze' to create a fresh, newly signed baseline.")
 
 def cmd_init():
@@ -674,6 +813,17 @@ def cmd_init():
         if not apr_log.exists() or apr_log.stat().st_size == 0:
             print("[BLOCKER] Security Violation (C-01/A16): External trust anchor already exists for this workspace, but approvals.jsonl is empty/missing! Refusing to reset trust anchor via 'init'.")
             sys.exit(1)
+
+    # V1.6.1 / R01 Fix: `init` can no longer launder a deleted anchor into a green-field
+    # project. If the append-only registry knows this workspace, the anchor must exist;
+    # an intentional reset has to go through `trust-reset` (which now leaves a signed trace).
+    if not anchor_file.exists() and anchored_history_for(ws):
+        print(
+            "[BLOCKER] Unrecorded trust-root reset (R01): ~/.o9-trust/index.tsv has history for this "
+            f"workspace but '{anchor_file.name}' is missing! Deleting the anchor is not a supported "
+            "way to start over -- use 'trust-reset <PROJECT_ID>'."
+        )
+        sys.exit(1)
 
     ws.mkdir(exist_ok=True)
     (ws / "evidence").mkdir(exist_ok=True)
@@ -742,7 +892,19 @@ def verify_full_ledger_chain(records: list, secret: str):
             else:
                 payload = f"APPROVAL:{seq}:{rec.get('approval_id')}:{rec.get('gate')}:{rec.get('approver')}:{rec.get('bound_baseline_id')}:{rec.get('bound_spec_sha256')}:{prev_hmac}"
         elif rtype == "BUG_CLOSE":
-            payload = f"BUG_CLOSE:{seq}:{rec.get('bug_id')}:{rec.get('qa_role')}:{rec.get('bound_baseline_id')}:{prev_hmac}"
+            # V1.6.1 / Top-3: the review ledger hash observed at signing time is folded
+            # into the MAC so a later YAML rewrite cannot masquerade as the signed state.
+            if rec.get("review_yaml_sha256"):
+                payload = f"BUG_CLOSE:{seq}:{rec.get('bug_id')}:{rec.get('qa_role')}:{rec.get('bound_baseline_id')}:{rec.get('review_yaml_sha256')}:{prev_hmac}"
+            else:
+                payload = f"BUG_CLOSE:{seq}:{rec.get('bug_id')}:{rec.get('qa_role')}:{rec.get('bound_baseline_id')}:{prev_hmac}"
+        elif rtype == "TRUST_RESET":
+            # V1.6.1 / T2: an intentional trust-root reset must be announced INSIDE the
+            # signed hash chain, so a reset can never again masquerade as a fresh project.
+            payload = (
+                f"TRUST_RESET:{seq}:{rec.get('archived_ledger_sha256')}:"
+                f"{rec.get('previous_key_fp')}:{rec.get('new_key_fp')}:{prev_hmac}"
+            )
         else:
             print(f"[BLOCKER] Unknown record type '{rtype}' in approvals.jsonl!")
             sys.exit(1)
@@ -937,7 +1099,10 @@ def cmd_close_bug(bug_id: str, qa_role="qa_lead", key=None):
         seq = len(records) + 1
         ts = now_iso()
 
-        payload = f"BUG_CLOSE:{seq}:{bug_id}:{qa_role}:{bl_id}:{prev_hmac}"
+        # V1.6.1 / Top-3: bind the review ledger AS IT IS RIGHT NOW into the signature, so
+        # "which defect table did the QA actually close this against?" becomes answerable.
+        review_yaml_sha256 = sha256_file(review_file)
+        payload = f"BUG_CLOSE:{seq}:{bug_id}:{qa_role}:{bl_id}:{review_yaml_sha256}:{prev_hmac}"
         mac = compute_hmac(secret, payload)
 
         append_ledger_record(ws, {
@@ -946,11 +1111,13 @@ def cmd_close_bug(bug_id: str, qa_role="qa_lead", key=None):
             "bug_id": bug_id,
             "qa_role": qa_role,
             "bound_baseline_id": bl_id,
+            "review_yaml_sha256": review_yaml_sha256,
             "prev_hmac": prev_hmac,
             "at": ts,
             "hmac": mac
         }, secret, seq)
         print(f"[BUG CLOSED] Signed BUG_CLOSE (seq={seq}) for '{bug_id}' by '{qa_role}' in approvals.jsonl")
+        print(f"[BUG CLOSED] review_and_defects.yaml at signing time: {review_yaml_sha256}")
 
 def verify_g5_g6_g7_ledgers(ws: Path, gate_stage: str, records: list) -> int:
     errors = 0
@@ -1006,9 +1173,9 @@ def verify_g5_g6_g7_ledgers(ws: Path, gate_stage: str, records: list) -> int:
         # (selected by `recorded_at`), so back-filling an older passing run cannot mask a
         # newer failing one. Falls back to document order for legacy runs without timestamps.
         g5_runs = extract_yaml_items(content, "run_id")
-        latest_run = select_latest_g5_run(g5_runs)
-        if latest_run is None:
-            print(f"[BLOCKER] No 'g5_test_runs' entry found in {review_file.name}!")
+        latest_run, run_error = select_latest_g5_run(g5_runs)
+        if run_error:
+            print(f"[BLOCKER] {run_error} in {review_file.name}!")
             errors += 1
         else:
             raw_code = latest_run.get("exit_code")
@@ -1076,18 +1243,31 @@ def verify_g5_g6_g7_ledgers(ws: Path, gate_stage: str, records: list) -> int:
     return errors
 
 def has_pass_only_function(text: str, suffix: str) -> bool:
-    """A5 Fix: Detects Python functions/methods whose body is solely `pass` or `...`."""
+    """A5 + V1.6.1 / R08: detects functions whose entire body is `pass` or `...`.
+
+    Also catches the single-line form `def f(): pass` and bodies that only look
+    different because of a trailing comment (`pass  # implemented later`).
+    """
     if suffix != ".py":
         return False
+
+    def _clean(s: str) -> str:
+        s = s.strip()
+        return s.split("#", 1)[0].strip() if "#" in s else s
+
     lines = text.splitlines()
     for i, line in enumerate(lines):
+        # single-line stub:  def f(): pass
+        m_inline = re.match(r"^\s*def\s+[A-Za-z0-9_]+\s*\(.*\)\s*(->.*)?:\s*(pass|\.\.\.)\s*(#.*)?$", line)
+        if m_inline:
+            return True
         m = re.match(r"^(\s*)def\s+[A-Za-z0-9_]+\s*\(.*\)\s*(->.*)?:\s*$", line)
         if m:
             indent = len(m.group(1))
             body = []
             for j in range(i + 1, len(lines)):
-                s = lines[j].strip()
-                if not s or s.startswith("#"):
+                s = _clean(lines[j])
+                if not s:
                     continue
                 cur_indent = len(lines[j]) - len(lines[j].lstrip())
                 if cur_indent <= indent:
@@ -1113,14 +1293,38 @@ def cmd_check(target_dir=".", require_approval=False, gate_stage="G4", key=None,
         sys.exit(1)
 
     records = read_ledger_records(ws)
+
+    # V1.6.1 / T2 Fix: an archived ledger must be explained by a signed TRUST_RESET record.
+    # Without this, `trust-reset` + deleting the .bak files would erase the audit trail and
+    # a reset project would be byte-indistinguishable from a brand new one.
+    archived_ledgers = sorted(ws.glob("approvals.jsonl.bak.*"))
+    if archived_ledgers:
+        reset_hashes = {r.get("archived_ledger_sha256") for r in records
+                        if r.get("type") == "TRUST_RESET" and r.get("archived_ledger_sha256")}
+        for bak in archived_ledgers:
+            try:
+                bak_hash = sha256_file(bak)
+            except Exception:
+                bak_hash = ""
+            if bak_hash not in reset_hashes:
+                print(
+                    f"[BLOCKER] Unrecorded trust-root reset: '{bak.name}' exists but approvals.jsonl "
+                    "carries no matching signed TRUST_RESET record!"
+                )
+                sys.exit(1)
+        print(f"[OK] {len(archived_ledgers)} archived ledger(s) matched to signed TRUST_RESET record(s).")
+
+    # V1.6.1: trust-root verification runs BEFORE the "no baseline" check so that a
+    # wiped ledger cannot report a benign "run freeze first" while the trust root has
+    # actually been reset behind the human's back (R01).
+    env_fp = expected_fp or os.environ.get("O9_EXPECTED_KEY_FP")
+    verify_external_anchor(ws, secret, records, expected_fp=env_fp)
+    verify_full_ledger_chain(records, secret)
+
     freeze_records = [r for r in records if r.get("type") == "FREEZE"]
     if not freeze_records:
         print("[BLOCKED] Fail-Closed: No frozen G3 baseline found in approvals.jsonl! Run 'freeze' first.")
         sys.exit(1)
-
-    env_fp = expected_fp or os.environ.get("O9_EXPECTED_KEY_FP")
-    verify_external_anchor(ws, secret, records, expected_fp=env_fp)
-    verify_full_ledger_chain(records, secret)
 
     latest_freeze = freeze_records[-1]
     bl_id = latest_freeze.get("baseline_id")
@@ -1164,26 +1368,50 @@ def cmd_check(target_dir=".", require_approval=False, gate_stage="G4", key=None,
         latest_apr = apr_records[-1]
         print(f"[OK] Detached approval {latest_apr.get('approval_id')} by '{latest_apr.get('approver')}' HMAC-verified.")
 
-    # C-06 / A5 Fix: Case-insensitive stub scan (catches todo, TODO_1, FIXME2) & broad vacuous assert scan
+    # V1.6.1 / Top-3: make the two mutable, unsigned G5/G6/G7 artifacts printable so a
+    # human can diff them against git history (the tool cannot freeze them: they legitimately
+    # change during a run, which is disclosed in CONTROL-MATRIX "What the tool does NOT enforce").
+    for label, artifact in (("review_and_defects.yaml", ws / "review_and_defects.yaml"),
+                            ("rtm_acceptance.md", ws / "rtm_acceptance.md")):
+        digest_line = sha256_file(artifact) if artifact.exists() else "missing"
+        print(f"[INFO] {label} current sha256 = {digest_line}")
+
+    # C-06 / A5 Fix + V1.6.1 / R08: case-insensitive stub scan & broader vacuous-assert scan
     stub_re = re.compile(r"(?<![A-Za-z])(TODO|FIXME|XXX|HACK)(?![A-Za-z])", re.IGNORECASE)
     vacuous_assert_re = re.compile(
-        r"(?:^\s*assert\s+(?:True|1)\b|assertTrue\s*\(\s*True\b|expect\s*\(\s*true\s*\)\.toBe\s*\(\s*true\s*\)|^\s*assert\s+([A-Za-z0-9_]+)\s*==\s*\1\b)"
+        r"(?:"
+        r"^\s*assert\s*\(\s*(?:True|1)\s*\)"                       # assert(True)
+        r"|^\s*assert\s+(?:True|1)\b"                              # assert True / assert 1
+        r"|^\s*assert\s+(?!0\b)[0-9]+\s*(?:$|#)"                  # assert 2  (truthy constant)
+        r"|assertTrue\s*\(\s*True\b"                               # assertTrue(True[, msg])
+        r"|assertEqual\s*\(\s*1\s*,\s*1\s*\)"                     # assertEqual(1, 1)
+        r"|expect\s*\(\s*true\s*\)\.toBe\s*\(\s*true\s*\)"
+        r"|^\s*assert\s+([A-Za-z0-9_]+)\s*==\s*\1\b"               # assert x == x
+        r")"
     )
     errors = 0
     scanned_files = 0
 
     target_path = Path(target_dir).resolve()
     self_path = Path(__file__).resolve()
+    exempt_paths = self_test_paths()
 
     for root, _, files in os.walk(target_path):
         root_parts = set(Path(root).relative_to(target_path).parts) if Path(root) != target_path else set()
         if root_parts & SKIP_DIRS:
             continue
         for file in files:
-            if file in SELF_TEST_FILES:
-                continue
             fpath = Path(root) / file
-            if fpath.resolve() == self_path or fpath.suffix.lower() not in CODE_EXTENSIONS:
+            try:
+                fpath_resolved = fpath.resolve()
+            except Exception:
+                fpath_resolved = fpath
+            # V1.6.1 / R04 Fix: exempt ONLY this tool's own conformance tests, matched by
+            # absolute path. A project's own `tests/` tree stays fully scanned (A6), and a
+            # renamed cheat file can no longer slip through on its basename.
+            if fpath_resolved == self_path or fpath_resolved in exempt_paths:
+                continue
+            if fpath.suffix.lower() not in CODE_EXTENSIONS:
                 continue
             scanned_files += 1
             text = read_text_auto_encoding(fpath)
@@ -1198,10 +1426,16 @@ def cmd_check(target_dir=".", require_approval=False, gate_stage="G4", key=None,
                 print(f"[ANTI-STUB BLOCKER] {fpath} -> Contains pass-only stub function body!")
                 errors += 1
 
-    # C-05 / A4 Fix: If target_dir differs from workspace parent or has 0 files when code is expected
-    if scanned_files == 0 and not allow_empty_scan and target_dir != ".":
-        print(f"[BLOCKER] Zero code files scanned in target '{target_dir}' (A4 empty-dir evasion blocked)!")
-        errors += 1
+    # C-05 / A4 + V1.6.1 / R05,R06 Fix: the zero-file guard no longer depends on how the
+    # target was spelled (`check .` used to be exempt, which made G4-01's claim false).
+    if scanned_files == 0 and gate_stage in ("G4", "G5", "G6", "G7"):
+        if allow_empty_scan:
+            print("[WARNING] empty scan accepted via --allow-empty-scan: 0 code files were scanned, "
+                  "so this gate result is NOT evidence that any code was reviewed.")
+        else:
+            print(f"[BLOCKER] Zero code files scanned in target '{target_dir}' (G4-01 empty-scan evasion blocked; "
+                  "pass --allow-empty-scan only for a genuinely code-free repository).")
+            errors += 1
 
     errors += verify_g5_g6_g7_ledgers(ws, gate_stage, records)
 
