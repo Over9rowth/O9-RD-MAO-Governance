@@ -1298,21 +1298,35 @@ def cmd_check(target_dir=".", require_approval=False, gate_stage="G4", key=None,
     # Without this, `trust-reset` + deleting the .bak files would erase the audit trail and
     # a reset project would be byte-indistinguishable from a brand new one.
     archived_ledgers = sorted(ws.glob("approvals.jsonl.bak.*"))
-    if archived_ledgers:
-        reset_hashes = {r.get("archived_ledger_sha256") for r in records
-                        if r.get("type") == "TRUST_RESET" and r.get("archived_ledger_sha256")}
+    reset_hashes = {r.get("archived_ledger_sha256") for r in records
+                    if r.get("type") == "TRUST_RESET" and r.get("archived_ledger_sha256")}
+    if archived_ledgers or reset_hashes:
+        present_hashes = set()
         for bak in archived_ledgers:
             try:
                 bak_hash = sha256_file(bak)
             except Exception:
                 bak_hash = ""
+            present_hashes.add(bak_hash)
             if bak_hash not in reset_hashes:
                 print(
                     f"[BLOCKER] Unrecorded trust-root reset: '{bak.name}' exists but approvals.jsonl "
                     "carries no matching signed TRUST_RESET record!"
                 )
                 sys.exit(1)
-        print(f"[OK] {len(archived_ledgers)} archived ledger(s) matched to signed TRUST_RESET record(s).")
+        # V1.6.1 / T2 second half: a TRUST_RESET that names an archive must still HAVE that
+        # archive. Otherwise deleting the .bak file erases the previous signed history while
+        # the reset record keeps pointing at a hash nobody can check any more.
+        missing_archives = sorted(reset_hashes - present_hashes)
+        if missing_archives:
+            print(
+                "[BLOCKER] Missing trust-root archive: approvals.jsonl declares TRUST_RESET archive(s) "
+                f"{[h[:12] + '...' for h in missing_archives]} but no matching 'approvals.jsonl.bak.*' "
+                "file is present. The pre-reset signed history has been deleted."
+            )
+            sys.exit(1)
+        if archived_ledgers:
+            print(f"[OK] {len(archived_ledgers)} archived ledger(s) matched to signed TRUST_RESET record(s).")
 
     # V1.6.1: trust-root verification runs BEFORE the "no baseline" check so that a
     # wiped ledger cannot report a benign "run freeze first" while the trust root has

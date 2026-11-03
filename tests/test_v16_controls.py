@@ -398,6 +398,17 @@ class TestGateRunnerV16(unittest.TestCase):
         res = self.run_cli("check", ".")
         self.assertNotEqual(res.returncode, 0)
         self.assertIn("Unrecorded trust-root reset", res.stdout)
+        bogus.unlink()
+
+        # Delete the archive that TRUST_RESET points at -> the erased history must be refused.
+        archives = list(self.ws.glob("approvals.jsonl.bak.*"))
+        self.assertTrue(archives, "expected the pre-reset ledger to be archived")
+        for archive in archives:
+            os.chmod(archive, 0o666)
+            archive.unlink()
+        res_missing = self.run_cli("check", ".")
+        self.assertNotEqual(res_missing.returncode, 0)
+        self.assertIn("Missing trust-root archive", res_missing.stdout)
 
     def test_15_r01_deleting_the_anchor_is_no_longer_a_way_to_start_over(self):
         """R01: the append-only registry must catch an anchor deletion that the ledger forgot."""
