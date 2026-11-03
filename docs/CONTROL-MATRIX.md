@@ -1,6 +1,6 @@
-# 📊 O9-RD Next V1.6.3 | Control Implementation Matrix (控制落实矩阵)
+# 📊 O9-RD Next V1.6.4 | Control Implementation Matrix (控制落实矩阵)
 
-> **Engineering Honesty Principle (教材 §14.4 Step 2)**: Never claim a rule is "tool-enforced" if it relies on human review, external container infrastructure, or structural form validation. Every row below maps a governance requirement across our **9 Gate Nodes (`G0, G0.5, G1, G2, G3, G4, G5, G6, G7`)** and **4 Routing Tracks (`Trivial, S, M, L`)** to the exact layer that enforces it in V1.6.3 (`tool-enforced`, `tool-validated (form & consistency)`, `manual-verified`, or `infra-boundary`):
+> **Engineering Honesty Principle (教材 §14.4 Step 2)**: Never claim a rule is "tool-enforced" if it relies on human review, external container infrastructure, or structural form validation. Every row below maps a governance requirement across our **9 Gate Nodes (`G0, G0.5, G1, G2, G3, G4, G5, G6, G7`)** and **4 Routing Tracks (`Trivial, S, M, L`)** to the exact layer that enforces it in V1.6.4 (`tool-enforced`, `tool-validated (form & consistency)`, `manual-verified`, or `infra-boundary`):
 >
 > - **`tool-enforced`**: Pure deterministic machine enforcement with cryptographic or hard logical fail-closed blocking that cannot be bypassed via prompt/config edits alone;
 > - **`tool-validated (form & consistency)`**: Automated structural and consistency validation (syntax/schema integrity, non-empty, regex patterns, temporal upper/lower bounds, cross-table ledger reconciliation, cryptographic signature binding), while semantic correctness remains bounded by human review or test-case quality;
@@ -28,7 +28,7 @@
 | **G5-01** | Black-Box-First Physical Source Isolation (E2) | `infra-boundary` | Requires OS/container read-only volume mounts (e.g. Docker `:ro` or an external sandbox) outside single-UID process space; the tool verifies `source_code_hidden_verified: true` in structured `g5_test_runs` items. Factory template initializes with `source_code_hidden_verified: false` and `exit_code: -1` (default red). |
 | **G5-02** | Repo-Internal Evidence & Chronological Run Selection | `tool-validated (form & consistency)` | Every `evidence_log_ref` must resolve **inside the repository root** (absolute paths and `..` escapes are blocked) and be a non-empty regular file; `/dev/null`-style sinks are rejected. Evaluates pure structured dict items from `g5_test_runs` (quote-aware comment stripping, no regex extraction). **`recorded_at` is strictly bounded**: must be $\ge$ baseline freeze timestamp (no stale/back-dated runs) and $\le \text{UTC now} + 5\text{s}$ (no future runs). Latest run selected chronologically must report `exit_code: 0`. |
 | **G5-03** | Bug Closure Record, Pure Dict Parse & Signed Review State | `tool-validated (form & consistency)` | `close-bug` requires defect to exist in YAML and folds `review_yaml_sha256` into HMAC payload. Parsing strips comments with quote-awareness, rejects Flow-style `{}` and duplicate keys. G5/G6/G7 checks verify that the latest `BUG_CLOSE`'s `review_yaml_sha256` matches current YAML (blocks post-sign tampering). |
-| **G6-01** | Full RTM Table Verification & QA Run Reconciliation | `tool-validated (form & consistency)` | Parses markdown table rows (`\| AC-xxx \|`) only; requires **100% coverage of all frozen `AC-xxx` IDs from `spec_and_contracts.md`**; blocks `not-run\|failed\|blocked\|not-covered\|skipped\|pending` rows. Cross-validates all referenced `RUN-[A-Za-z0-9_-]+` against passing runs (`exit_code == 0`) in `g5_test_runs`. Factory template initializes with `not-covered` and `not-run` (default red). |
+| **G6-01** | Full RTM Table Verification & QA Run Reconciliation | `tool-validated (form & consistency)` | Parses markdown table rows (`\| AC-xxx \|`) only; requires **100% coverage of all frozen `AC-xxx` IDs from `spec_and_contracts.md`**; blocks `not-run\|failed\|blocked\|not-covered\|skipped\|pending` rows. Cross-validates all referenced `RUN-[A-Za-z0-9_-]+` against passing runs (`exit_code == 0`) in `g5_test_runs`. Requires every AC row to reference at least one valid passing RUN-xxx ID (N3b fixed). Factory template initializes with `not-covered` and `not-run` (default red). |
 | **G7-01** | Three Decoupled Owner Decisions Check | `tool-validated (form & consistency)` | Verifies explicit Sign-Off (`approved`), Release (`hold` or `authorized`), and Ownership & License in `rtm_acceptance.md`. |
 | **OBS-01** | Observability of the Unsigned Artifacts | `tool-enforced` | Every `check` prints the current `sha256` of `review_and_defects.yaml` and `rtm_acceptance.md` in its `[OK]`/`[INFO]` output, so a human can diff them against git history. This is *observability*, not tamper-evidence — see the disclosure table in §2. |
 
@@ -44,7 +44,7 @@ If an autonomous coding agent is granted unrestricted shell access under the **e
 
 Consequently, for **L-Track (high-risk) isolation**, the signing secret and the `gate_runner.py check` verification must be held/executed in an **independent CI runner (e.g. GitHub Actions with protected secrets)**, a separate OS user, or an external container host outside the agent's sandbox.
 
-`trust-reset` is gated on the signing secret and a project-id spelling check. A same-UID agent holding the secret **can** invoke it; it is therefore an *auditable* recovery path, not a security boundary against such an agent. What V1.6.3 guarantees is that such a reset cannot happen **silently**: it archives the previous anchor and ledger, and it writes a signed `TRUST_RESET` record as record #1 of the new chain.
+`trust-reset` is gated on the signing secret and a project-id spelling check. A same-UID agent holding the secret **can** invoke it; it is therefore an *auditable* recovery path, not a security boundary against such an agent. What V1.6.4 guarantees is that such a reset cannot happen **silently**: it archives the previous anchor and ledger, and it writes a signed `TRUST_RESET` record as record #1 of the new chain.
 
 ### What the tool does NOT enforce
 
@@ -57,10 +57,21 @@ Consequently, for **L-Track (high-risk) isolation**, the signing secret and the 
 | **Tamper-evidence for the G5/G6/G7 artifacts** | `review_and_defects.yaml` and `rtm_acceptance.md` sit **outside** the signed `manifest_sha256`, because they legitimately mutate during a run (defects are added, runs are appended). Their integrity must come from **git history / the audit ledger / `review_yaml_sha256` on each `BUG_CLOSE`**, not from `freeze`. `check` prints their current SHA-256 so a human can compare. |
 | **Anti-rollback of the whole signed history** | There is a monotonic `seq` and an anchored minimum length, but an attacker who can restore *every* artifact (ledger + anchor + index + state) to an older consistent snapshot is indistinguishable from a project that simply stopped. True anti-rollback needs an external monotonic witness (git tag on a protected branch, transparency log, TSA). |
 | **Who actually ran the tests** | The tool proves a non-empty evidence file exists and that a `recorded_at`-ordered run reports `exit_code: 0`. Proving *a real test process produced that file* needs signed CI artifacts. |
+| **Unreported defects (`defects: []`)** | `review_yaml_sha256` is cryptographically bound when `close-bug` signs a `BUG_CLOSE` record. If an agent declares `defects: []`, no `BUG_CLOSE` signature is required — the tool cannot force an agent to report a defect it wishes to hide. |
 
 ---
 
-## 3. v1.6.3 Change Summary
+## 3. v1.6.4 Change Summary
+
+| Area | v1.6.3 behaviour | v1.6.4 behaviour |
+| :--- | :--- | :--- |
+| G5-02 / P13 | Sub-second freeze timestamp vs second-precision `recorded_at` caused same-second false positive | Clears microsecond on freeze timestamp (`freeze_floor = freeze_dt.replace(microsecond=0)`) |
+| G4-01 / P8 | `raise NotImplementedError` regex blocked standard `@abstractmethod` ABC classes | Removed from vacuous assert scan (handled by AST/manual review G4-02) |
+| G6-01 / N3b | AC row without any `RUN-xxx` could pass if no failure keyword present | Requires every AC row to reference at least one `RUN-xxx` ID (unless `no-run-required manual`) |
+| Threat Model / N4 | Implicit disclosure on `defects: []` | Explicit disclosure added: tool cannot compel an agent to report a defect if it claims `defects: []` |
+| Dead Code | `ROOT_ONLY_SKIP_DIRS = set()` | Cleaned up unused constant |
+
+## 4. v1.6.3 Change Summary
 
 | Area | v1.6.2 behaviour | v1.6.3 behaviour |
 | :--- | :--- | :--- |

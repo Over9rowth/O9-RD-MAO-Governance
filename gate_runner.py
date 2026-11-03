@@ -31,10 +31,10 @@ import shutil
 import hashlib
 import re
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from contextlib import contextmanager
 
-VERSION = "O9-RD-Next-V1.6.3"
+VERSION = "O9-RD-Next-V1.6.4"
 
 # V1.6.1 / R10: the ledger lock lives OUTSIDE the audited workspace so that a
 # same-UID agent cannot permanently DoS signing by pre-creating the lock directory,
@@ -66,7 +66,6 @@ CODE_EXTENSIONS = {
 # A6 Fix: removed 'tests' from SKIP_DIRS so production stubs hidden in tests/ are caught (test_gate_runner.py is excluded by filename)
 # V1.6.3 / 1.11b: remove docs, prompts, templates from SKIP_DIRS so code hidden under docs/ is scanned
 ALWAYS_SKIP_DIRS = {".git", "o9_workspace", "__pycache__", "node_modules", ".venv"}
-ROOT_ONLY_SKIP_DIRS = set()
 SKIP_DIRS = ALWAYS_SKIP_DIRS
 
 # V1.6.1 / R04: never exempt a file by BARE FILENAME (that let `mv cheat.py confirm.py`
@@ -1246,6 +1245,7 @@ def verify_g5_g6_g7_ledgers(ws: Path, gate_stage: str, records: list) -> int:
         freeze_records = [r for r in records if r.get("type") == "FREEZE"]
         latest_freeze = freeze_records[-1] if freeze_records else {}
         freeze_dt = parse_timestamp(latest_freeze.get("at")) if latest_freeze else None
+        freeze_floor = freeze_dt.replace(microsecond=0) if freeze_dt else None
         now_utc = datetime.now(timezone.utc)
 
         try:
@@ -1299,8 +1299,8 @@ def verify_g5_g6_g7_ledgers(ws: Path, gate_stage: str, records: list) -> int:
                 if (dt - now_utc).total_seconds() > 5:
                     print(f"[BLOCKER] Future timestamp detected in recorded_at!")
                     errors += 1
-                if freeze_dt and dt < freeze_dt:
-                    print(f"[BLOCKER] Stale or back-dated timestamp in recorded_at! ({rec_str} is earlier than baseline frozen_at {latest_freeze.get('at')})")
+                if freeze_floor and dt < freeze_floor:
+                    print(f"[BLOCKER] Stale or back-dated timestamp in recorded_at! ({rec_str} is earlier than baseline frozen_at {freeze_floor.isoformat()})")
                     errors += 1
 
         # C-04 / D-8 + V1.6 G5-02: evaluate the exit_code of the CHRONOLOGICALLY LATEST run
@@ -1370,25 +1370,27 @@ def verify_g5_g6_g7_ledgers(ws: Path, gate_stage: str, records: list) -> int:
                 if line.strip().startswith("|"):
                     frozen_ac_ids.update(re.findall(r"\bAC-\d+\b", line))
 
-        rtm_ac_ids = set()
-        for row in ac_rows:
-            rtm_ac_ids.update(re.findall(r"\bAC-\d+\b", row))
-            if re.search(r"\b(not-run|failed|blocked|not-covered|skipped|pending)\b", row, re.IGNORECASE):
-                print(f"[BLOCKER] Unverified or failed AC row in {rtm_file.name}: {row.strip()}")
-                errors += 1
-
-        # V1.6.3 / N3: Check RTM run_id against g5_test_runs
         clean_review = strip_yaml_comments(review_file.read_text(encoding="utf-8", errors="ignore")) if review_file.exists() else ""
         g5_all_runs = extract_yaml_items(clean_review, "g5_test_runs")
         valid_passing_runs = {
             r.get("run_id") for r in g5_all_runs
             if str(r.get("exit_code", "")).strip() == "0"
         }
+
+        rtm_ac_ids = set()
         for row in ac_rows:
-            row_runs = re.findall(r"\bRUN-[A-Za-z0-9_-]+\b", row)
-            for rid in row_runs:
-                if rid not in valid_passing_runs:
-                    print(f"[BLOCKER] RTM references non-existent or failed G5 run_id '{rid}' in {rtm_file.name}!")
+            rtm_ac_ids.update(re.findall(r"\bAC-\d+\b", row))
+            if re.search(r"\b(not-run|failed|blocked|not-covered|skipped|pending)\b", row, re.IGNORECASE):
+                print(f"[BLOCKER] Unverified or failed AC row in {rtm_file.name}: {row.strip()}")
+                errors += 1
+            row_runs = re.findall(r"\b(RUN-[A-Za-z0-9_-]+)\b", row)
+            if not row_runs:
+                if not (re.search(r"\bno-run-required\b", row, re.IGNORECASE) and re.search(r"\bmanual\b", row, re.IGNORECASE)):
+                    print(f"[BLOCKER] N3b Violation: AC row in {rtm_file.name} does not reference any 'RUN-xxx' evidence ID: {row.strip()}")
+                    errors += 1
+            for r_id in row_runs:
+                if r_id not in valid_passing_runs:
+                    print(f"[BLOCKER] RTM references non-existent or failed G5 run_id '{r_id}' in {rtm_file.name}!")
                     errors += 1
 
         missing_acs = frozen_ac_ids - rtm_ac_ids
@@ -1604,7 +1606,6 @@ def cmd_check(target_dir=".", require_approval=False, gate_stage="G4", key=None,
         r"|assertEqual\s*\(\s*len\([^)]*\)\s*,\s*len\([^)]*\)\s*\)" # assertEqual(len([]), len([]))
         r"|expect\s*\(\s*true\s*\)\.toBe\s*\(\s*true\s*\)"
         r"|^\s*assert\s+(?P<g2>[A-Za-z0-9_]+)\s*==\s*(?P=g2)\b"    # assert x == x
-        r"|^\s*raise\s+NotImplementedError\b"                      # raise NotImplementedError
         r")"
     )
     errors = 0

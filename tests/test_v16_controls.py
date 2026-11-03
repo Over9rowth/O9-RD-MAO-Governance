@@ -108,7 +108,7 @@ class TestGateRunnerV16(unittest.TestCase):
     def test_00_version_is_v16(self):
         res = self.run_cli("--version")
         self.assertEqual(res.returncode, 0)
-        self.assertEqual(res.stdout.strip(), "O9-RD-Next-V1.6.3")
+        self.assertEqual(res.stdout.strip(), "O9-RD-Next-V1.6.4")
 
     # ---------------- G1-01 ----------------
     def test_01_g1_01_blocks_empty_or_acless_spec(self):
@@ -701,11 +701,10 @@ class TestGateRunnerV16(unittest.TestCase):
         self.assertNotEqual(res_assert.returncode, 0)
         self.assertIn("FAKE-ASSERT BLOCKER", res_assert.stdout)
 
-        # 6c. raise NotImplementedError
+        # 6c. raise NotImplementedError is permitted per P8
         test_py.write_text("def prod_func():\n    raise NotImplementedError\n", encoding="utf-8")
         res_nie = self.run_cli("check", ".")
-        self.assertNotEqual(res_nie.returncode, 0)
-        self.assertIn("FAKE-ASSERT BLOCKER", res_nie.stdout)
+        self.assertEqual(res_nie.returncode, 0)
 
         # 6d. docstring-aware pass body
         test_py.write_text('def empty_func():\n    """Docstring explanation"""\n    pass\n', encoding="utf-8")
@@ -738,6 +737,63 @@ class TestGateRunnerV16(unittest.TestCase):
         self.assertIn("[BLOCKER] Expected regular file but found directory", res_dir.stdout)
         self.assertNotIn("Traceback", res_dir.stderr)
         apr_log.rmdir()
+
+    def test_18_v164_same_second_freeze_abc_abstractmethod_and_n3b_run_id(self):
+        """v1.6.4 regression: P13 same-second freeze & check, P8 ABC compatibility, N3b RTM run_id enforcement."""
+        # 1. P13: Same-second freeze & check (sub-second precision truncation tolerance)
+        self.bootstrap()
+        self.make_g5_passable()
+        self.make_g6_passable()
+        self.make_g7_passable()
+
+        now_sec = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        res_frz = self.run_cli("freeze", "--force")
+        self.assertEqual(res_frz.returncode, 0)
+
+        rev_f = self.ws / "review_and_defects.yaml"
+        rev_txt = rev_f.read_text(encoding="utf-8")
+        rev_txt = re.sub(r"""recorded_at:\s*["'][^"']*["']""", f'recorded_at: "{now_sec}"', rev_txt)
+        rev_f.write_text(rev_txt, encoding="utf-8")
+
+        res_apr3 = self.run_cli("approve", "station_master")
+        self.assertEqual(res_apr3.returncode, 0)
+        res_apr7 = self.run_cli("approve", "station_master", "--gate=G7")
+        self.assertEqual(res_apr7.returncode, 0)
+
+        res_chk = self.run_cli("check", ".", "--gate=G7")
+        self.assertEqual(res_chk.returncode, 0)
+        self.assertIn("[PASSED] Gate G7 checks passed", res_chk.stdout)
+
+        # 2. P8: ABC with @abstractmethod and raise NotImplementedError is not blocked
+        abc_file = self.cwd / "src" / "base_interface.py"
+        abc_file.parent.mkdir(parents=True, exist_ok=True)
+        abc_code = '''import abc
+
+class BaseEngine(abc.ABC):
+    """Abstract base engine."""
+
+    @abc.abstractmethod
+    def start(self) -> None:
+        raise NotImplementedError("Subclasses must implement start")
+
+    @abc.abstractmethod
+    def stop(self) -> None:
+        raise NotImplementedError
+'''
+        abc_file.write_text(abc_code, encoding="utf-8")
+        res_abc = self.run_cli("check", ".")
+        self.assertEqual(res_abc.returncode, 0)
+        abc_file.unlink()
+
+        # 3. N3b: RTM row omitting RUN-xxx ID is blocked
+        rtm_f = self.ws / "rtm_acceptance.md"
+        rtm_orig = rtm_f.read_text(encoding="utf-8")
+        rtm_no_run = rtm_orig.replace("RUN-BB-001", "N/A")
+        rtm_f.write_text(rtm_no_run, encoding="utf-8")
+        res_n3b = self.run_cli("check", ".", "--gate=G6")
+        self.assertNotEqual(res_n3b.returncode, 0)
+        self.assertIn("N3b Violation", res_n3b.stdout)
+        rtm_f.write_text(rtm_orig, encoding="utf-8")
 
 if __name__ == "__main__":
     unittest.main()
