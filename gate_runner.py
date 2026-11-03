@@ -1691,7 +1691,7 @@ def parse_kv_flag(args, prefix):
             return a.split("=", 1)[1]
     return None
 
-if __name__ == "__main__":
+def main():
     args = sys.argv[1:]
     cmd = args[0] if args else "help"
     if cmd in ("--version", "-v"):
@@ -1749,3 +1749,6 @@ if __name__ == "__main__":
         cmd_trust_reset(confirm_token=pos[0], key=key_arg)
     else:
         print("Usage: python gate_runner.py [init | freeze [--force] | approve [role] [--gate=G3..G7] | close-bug <BUG_ID> [qa_role] | check [dir] [--gate=G4|G5|G6|G7] [--expect-key-fp=FP] | trust-reset <PROJECT_ID>] [--key=SECRET]")
+
+if __name__ == "__main__":
+    main()
