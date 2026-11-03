@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 140" width="100%" height="140">
+  <style>
+    .sub { font: 500 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #6e7781; letter-spacing: 2.5px; }
+    .title { font: 800 28px "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #1f2328; letter-spacing: 3px; }
+    .motto { font: 400 17px "Songti SC", "SimSun", "Noto Serif CJK SC", serif; fill: #333333; letter-spacing: 2px; }
+    @media (prefers-color-scheme: dark) {
+      .sub { fill: #8b949e; }
+      .title { fill: #f0f6fc; }
+      .motto { fill: #c9d1d9; }
+    }
+  </style>
+  <text x="50%" y="34" text-anchor="middle" class="sub">OVER9ROWTH · PRIVATE COLLECTION</text>
+  <text x="50%" y="78" text-anchor="middle" class="title">燧人计划</text>
+  <text x="50%" y="116" text-anchor="middle" class="motto">星星之火，始于你我。</text>
+</svg>
