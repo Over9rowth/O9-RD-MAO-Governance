@@ -30,10 +30,10 @@ g5_test_runs:
     recorded_at: "2026-11-03T00:00:00Z"
     phase_type: "black-box-first"
     tester_session: "QA-SESSION-01"
-    source_code_hidden_verified: true
+    source_code_hidden_verified: false
     candidate_id: "CAND-001"
     command_executed: "pytest tests/"
-    exit_code: 0
+    exit_code: -1
     evidence_log_ref: "o9_workspace/evidence/run-bb-001.log"
 
 # 4. Defects Ledger (Allowed closed statuses: closed, verified)

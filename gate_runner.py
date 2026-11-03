@@ -34,7 +34,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from contextlib import contextmanager
 
-VERSION = "O9-RD-Next-V1.6.1"
+VERSION = "O9-RD-Next-V1.6.2"
 
 # V1.6.1 / R10: the ledger lock lives OUTSIDE the audited workspace so that a
 # same-UID agent cannot permanently DoS signing by pre-creating the lock directory,
@@ -63,7 +63,10 @@ CODE_EXTENSIONS = {
     ".java", ".c", ".cpp", ".h", ".cs", ".rb", ".php", ".sh", ".kt", ".swift", ".ipynb"
 }
 # A6 Fix: removed 'tests' from SKIP_DIRS so production stubs hidden in tests/ are caught (test_gate_runner.py is excluded by filename)
-SKIP_DIRS = {".git", "o9_workspace", "docs", "prompts", "templates", "__pycache__", "node_modules", ".venv"}
+# V1.6.2: ALWAYS_SKIP_DIRS skipped at any depth; ROOT_ONLY_SKIP_DIRS skipped only at target root
+ALWAYS_SKIP_DIRS = {".git", "o9_workspace", "__pycache__", "node_modules", ".venv"}
+ROOT_ONLY_SKIP_DIRS = {"docs", "prompts", "templates"}
+SKIP_DIRS = ALWAYS_SKIP_DIRS | ROOT_ONLY_SKIP_DIRS
 
 # V1.6.1 / R04: never exempt a file by BARE FILENAME (that let `mv cheat.py confirm.py`
 # walk straight through the gate). Only the two conformance test files that ship with
@@ -115,10 +118,10 @@ g5_test_runs:
     recorded_at: "2026-11-03T00:00:00Z"
     phase_type: "black-box-first"
     tester_session: "QA-SESSION-01"
-    source_code_hidden_verified: true
+    source_code_hidden_verified: false
     candidate_id: "CAND-001"
     command_executed: "pytest tests/"
-    exit_code: 0
+    exit_code: -1
     evidence_log_ref: "o9_workspace/evidence/run-bb-001.log"
 defects: []
 manual_verification_todos: []
@@ -127,9 +130,9 @@ manual_verification_todos: []
 DEFAULT_RTM_MD = """# G6 Requirements Traceability Matrix (RTM) & G7 Sign-Off Decisions
 | REQ-ID | AC-ID | Importance | Code Ref | Test Case ID | Evidence `run_id` | Coverage | Result |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `REQ-001` | `AC-001` | `core` | `src/` | `BB-001` | `RUN-BB-001` | `covered` | `passed` |
+| `REQ-001` | `AC-001` | `core` | `src/` | `BB-001` | `RUN-BB-001` | `not-covered` | `not-run` |
 ## 4. G7 Owner's Three Decoupled Decisions
-- **Decision 1 (Sign-Off)**: `approved`
+- **Decision 1 (Sign-Off)**: `pending`
 - **Decision 2 (Release Authorization)**: `hold`
 - **Decision 3 (Ownership & License)**: `MIT`
 """
@@ -212,8 +215,13 @@ def _lock_owner_alive(lock_dir: Path) -> bool:
 
 @contextmanager
 def workspace_lock(ws: Path):
-    """C-09 / A11b + V1.6.1 R10 Fix: inter-process lock with owner pid and stale reclaim."""
+    """C-09 / A11b + V1.6.1 R10 Fix + V1.6.2 1.14: inter-process lock with owner pid and stale reclaim."""
     lock_dir = get_lock_dir(ws)
+    if lock_dir.is_file():
+        try:
+            lock_dir.unlink()
+        except Exception:
+            pass
     deadline = time.time() + LOCK_WAIT_SECONDS
     acquired = False
     while time.time() < deadline:
@@ -226,6 +234,12 @@ def workspace_lock(ws: Path):
             acquired = True
             break
         except FileExistsError:
+            if lock_dir.is_file():
+                try:
+                    lock_dir.unlink()
+                except Exception:
+                    pass
+                continue
             age = _lock_age_seconds(lock_dir)
             if age > LOCK_STALE_SECONDS or not _lock_owner_alive(lock_dir):
                 print(f"[WARN] Reclaiming stale ledger lock (age={age:.1f}s, owner={lock_dir / 'owner'}).")
@@ -454,6 +468,9 @@ def extract_yaml_items(yaml_text: str, id_key: str) -> list:
             cur, cur_indent = {}, indent
             kv = parse_kv_line(m_item.group(1))
             if kv:
+                if kv[0] in cur:
+                    print(f"[BLOCKER] Duplicate YAML key '{kv[0]}' detected in item!")
+                    sys.exit(1)
                 cur[kv[0]] = kv[1]
             continue
         if cur is None:
@@ -463,7 +480,10 @@ def extract_yaml_items(yaml_text: str, id_key: str) -> list:
             cur = None
             continue
         kv = parse_kv_line(stripped)
-        if kv and kv[0] not in cur:
+        if kv:
+            if kv[0] in cur:
+                print(f"[BLOCKER] Duplicate YAML key '{kv[0]}' detected in item!")
+                sys.exit(1)
             cur[kv[0]] = kv[1]
     if cur is not None:
         items.append(cur)
@@ -502,6 +522,12 @@ def select_latest_g5_run(runs: list):
             f"g5 run(s) {missing} have a missing or unparseable `recorded_at`; "
             "an unstamped QA run cannot be ordered chronologically"
         )
+    now_utc = datetime.now(timezone.utc)
+    for r in runs:
+        dt = parse_timestamp(r.get("recorded_at"))
+        if dt and (dt - now_utc).total_seconds() > 300:
+            print("[BLOCKER] Future timestamp detected in recorded_at!")
+            return None, "Future timestamp detected in recorded_at!"
     stamped = [(parse_timestamp(r.get("recorded_at")), idx, r) for idx, r in enumerate(runs)]
     return max(stamped, key=lambda t: (t[0], t[1]))[2], None
 
@@ -841,9 +867,7 @@ def cmd_init():
                 shutil.copyfile(src, dst)
             else:
                 dst.write_text(fallback_content, encoding="utf-8")
-    ev_log = ws / "evidence" / "run-bb-001.log"
-    if not ev_log.exists():
-        ev_log.write_text("[G5 Black-Box Test Run Log] Initialized evidence artifact.\n", encoding="utf-8")
+    # V1.6.2 / P0-1: no longer create fake evidence log; must be generated by actual test run
     if not apr_log.exists():
         apr_log.write_text("", encoding="utf-8")
         set_readonly(apr_log)
@@ -1129,8 +1153,18 @@ def verify_g5_g6_g7_ledgers(ws: Path, gate_stage: str, records: list) -> int:
         if not review_file.exists():
             print(f"[BLOCKER] Fail-Closed: Missing {review_file} required for {gate_stage}!")
             return 1
-        content = review_file.read_text(encoding="utf-8", errors="ignore")
+        raw_content = review_file.read_text(encoding="utf-8", errors="ignore")
+        clean_lines = [re.sub(r"#.*$", "", l) for l in raw_content.splitlines()]
 
+        # V1.6.2 / 1.3: Flow-style YAML forbidden
+        for line in clean_lines:
+            if "{" in line or "}" in line:
+                print(f"[BLOCKER] Flow-style YAML ('{{' or '}}') is forbidden in {review_file.name}!")
+                return errors + 1
+
+        content = "\n".join(clean_lines)
+
+        # V1.6.2 / 1.6: Check against comment-stripped content
         if not re.search(r"source_code_hidden_verified:\s*true", content, re.IGNORECASE):
             print(f"[BLOCKER] {gate_stage} violation: Missing 'source_code_hidden_verified: true' in {review_file.name}!")
             errors += 1
@@ -1210,6 +1244,14 @@ def verify_g5_g6_g7_ledgers(ws: Path, gate_stage: str, records: list) -> int:
                 print(f"[BLOCKER] S3 Violation: Defect '{bug_id}' claims closed by '{closer}' in YAML, but has NO cryptographic BUG_CLOSE record in approvals.jsonl!")
                 errors += 1
 
+        # V1.6.2 / 1.7 Fix: BUG_CLOSE binds review_yaml_sha256; any subsequent YAML tampering must block
+        bug_close_records = [r for r in records if r.get("type") == "BUG_CLOSE"]
+        if bug_close_records:
+            last_bc = bug_close_records[-1]
+            if last_bc.get("review_yaml_sha256") != sha256_file(review_file):
+                print(f"[BLOCKER] review_and_defects.yaml was modified after BUG_CLOSE signature!")
+                errors += 1
+
     if gate_stage in ("G6", "G7"):
         if not rtm_file.exists():
             print(f"[BLOCKER] Fail-Closed: Missing {rtm_file} required for {gate_stage}!")
@@ -1223,10 +1265,25 @@ def verify_g5_g6_g7_ledgers(ws: Path, gate_stage: str, records: list) -> int:
         if not ac_rows:
             print(f"[BLOCKER] {rtm_file.name} contains no valid AC traceability table rows!")
             errors += 1
+        # V1.6.2 / 1.8 Fix: Extract all frozen AC-xxx from spec_and_contracts.md and verify 100% coverage
+        frozen_ac_ids = set()
+        spec_file = ws / BASELINE_SPEC_FILE
+        if spec_file.exists():
+            for line in spec_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.strip().startswith("|"):
+                    frozen_ac_ids.update(re.findall(r"\bAC-\d+\b", line))
+
+        rtm_ac_ids = set()
         for row in ac_rows:
-            if re.search(r"\b(not-run|failed|blocked|not-covered)\b", row, re.IGNORECASE):
+            rtm_ac_ids.update(re.findall(r"\bAC-\d+\b", row))
+            if re.search(r"\b(not-run|failed|blocked|not-covered|skipped|pending)\b", row, re.IGNORECASE):
                 print(f"[BLOCKER] Unverified or failed AC row in {rtm_file.name}: {row.strip()}")
                 errors += 1
+
+        missing_acs = frozen_ac_ids - rtm_ac_ids
+        if missing_acs:
+            print(f"[BLOCKER] {rtm_file.name} does not cover all frozen ACs! Missing: {sorted(missing_acs)}")
+            errors += 1
 
     if gate_stage == "G7":
         rtm_text = rtm_file.read_text(encoding="utf-8", errors="ignore")
@@ -1382,6 +1439,17 @@ def cmd_check(target_dir=".", require_approval=False, gate_stage="G4", key=None,
         latest_apr = apr_records[-1]
         print(f"[OK] Detached approval {latest_apr.get('approval_id')} by '{latest_apr.get('approver')}' HMAC-verified.")
 
+    if gate_stage == "G7":
+        g7_aprs = [
+            r for r in apr_records
+            if r.get("gate") == "G7"
+        ]
+        if not g7_aprs:
+            print("[BLOCKER] Missing detached G7 approval in approvals.jsonl! Run 'approve station_master --gate=G7'.")
+            sys.exit(1)
+        latest_g7 = g7_aprs[-1]
+        print(f"[OK] Detached G7 approval {latest_g7.get('approval_id')} by '{latest_g7.get('approver')}' HMAC-verified.")
+
     # V1.6.1 / Top-3: make the two mutable, unsigned G5/G6/G7 artifacts printable so a
     # human can diff them against git history (the tool cannot freeze them: they legitimately
     # change during a run, which is disclosed in CONTROL-MATRIX "What the tool does NOT enforce").
@@ -1407,12 +1475,22 @@ def cmd_check(target_dir=".", require_approval=False, gate_stage="G4", key=None,
     scanned_files = 0
 
     target_path = Path(target_dir).resolve()
+    repo_root_res = ws.parent.resolve()
+    try:
+        target_path.relative_to(repo_root_res)
+    except ValueError:
+        print(f"[BLOCKER] Target path '{target_dir}' escapes the repository root ({repo_root_res})!")
+        sys.exit(1)
+
     self_path = Path(__file__).resolve()
     exempt_paths = self_test_paths()
 
     for root, _, files in os.walk(target_path):
-        root_parts = set(Path(root).relative_to(target_path).parts) if Path(root) != target_path else set()
-        if root_parts & SKIP_DIRS:
+        rel = Path(root).relative_to(target_path) if Path(root) != target_path else None
+        rel_parts = rel.parts if rel else ()
+        if any(p in ALWAYS_SKIP_DIRS for p in rel_parts):
+            continue
+        if rel_parts and rel_parts[0] in ROOT_ONLY_SKIP_DIRS:
             continue
         for file in files:
             fpath = Path(root) / file

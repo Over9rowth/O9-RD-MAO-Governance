@@ -16,6 +16,6 @@
 - **Independent Auditor Verdict**: `passed`
 
 ## 4. G7 Owner's Three Decoupled Decisions
-- **Decision 1 (Sign-Off)**: `approved`
+- **Decision 1 (Sign-Off)**: `pending`
 - **Decision 2 (Release Authorization)**: `hold`
 - **Decision 3 (Ownership & License)**: `MIT`

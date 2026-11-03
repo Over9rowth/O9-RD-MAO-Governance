@@ -20,6 +20,32 @@ class TestGateRunnerV15(unittest.TestCase):
         # temp repo gets one ordinary source file to scan.
         (self.cwd / "app_main.py").write_text("def main():\n    return 0\n", encoding="utf-8")
 
+    def make_g5_passable(self):
+        rev_file = self.cwd / "o9_workspace" / "review_and_defects.yaml"
+        content = rev_file.read_text(encoding="utf-8")
+        content = content.replace("source_code_hidden_verified: false", "source_code_hidden_verified: true")
+        content = content.replace("exit_code: -1", "exit_code: 0")
+        rev_file.write_text(content, encoding="utf-8")
+        ev_file = self.cwd / "o9_workspace" / "evidence" / "run-bb-001.log"
+        ev_file.parent.mkdir(parents=True, exist_ok=True)
+        ev_file.write_text("[PASS EVIDENCE]\n", encoding="utf-8")
+
+    def make_g6_passable(self):
+        self.make_g5_passable()
+        rtm_file = self.cwd / "o9_workspace" / "rtm_acceptance.md"
+        content = rtm_file.read_text(encoding="utf-8")
+        content = content.replace("| not-covered | not-run |", "| covered | passed |")
+        rtm_file.write_text(content, encoding="utf-8")
+
+    def make_g7_passable(self):
+        self.make_g6_passable()
+        rtm_file = self.cwd / "o9_workspace" / "rtm_acceptance.md"
+        content = rtm_file.read_text(encoding="utf-8")
+        content = content.replace("Decision 1 (Sign-Off)**: `pending`", "Decision 1 (Sign-Off)**: `approved`")
+        content = content.replace("Decision 1 (Sign-Off): pending", "Decision 1 (Sign-Off): approved")
+        rtm_file.write_text(content, encoding="utf-8")
+        self.run_cli("approve", "station_master", "--gate=G7")
+
     def tearDown(self):
         apr_log = self.cwd / "o9_workspace" / "approvals.jsonl"
         if apr_log.exists():
@@ -84,6 +110,7 @@ class TestGateRunnerV15(unittest.TestCase):
         self.run_cli("init")
         self.run_cli("freeze")
         self.run_cli("approve", "station_master")
+        self.make_g5_passable()
 
         review_file = self.cwd / "o9_workspace" / "review_and_defects.yaml"
         base_txt = review_file.read_text(encoding="utf-8")
@@ -96,9 +123,9 @@ class TestGateRunnerV15(unittest.TestCase):
         self.assertTrue("unauthorized role" in res_bad.stdout or "unauthorized identity" in res_bad.stdout)
 
         # 独立 QA (qa_lead) 使用 close-bug 签名后关闭 Bug -> 允许通过
-        self.run_cli("close-bug", "BUG-1", "qa_lead")
         good_bug = "defects:\n  - bug_id: BUG-1\n    status: closed\n    closed_by_tester: qa_lead\n"
         review_file.write_text(base_txt.replace("defects: []", good_bug), encoding="utf-8")
+        self.run_cli("close-bug", "BUG-1", "qa_lead")
         res_good = self.run_cli("check", ".", "--gate=G5")
         self.assertEqual(res_good.returncode, 0)
 
@@ -107,6 +134,7 @@ class TestGateRunnerV15(unittest.TestCase):
         self.run_cli("init")
         self.run_cli("freeze")
         self.run_cli("approve", "station_master")
+        self.make_g5_passable()
 
         review_file = self.cwd / "o9_workspace" / "review_and_defects.yaml"
         base_txt = review_file.read_text(encoding="utf-8")
@@ -123,8 +151,9 @@ class TestGateRunnerV15(unittest.TestCase):
         self.run_cli("init")
         self.run_cli("freeze")
         self.run_cli("approve", "station_master")
+        self.make_g7_passable()
 
-        # G7 默认模板三项决定齐全，应通过
+        # G7 三项决定齐全且有 G7 批准，应通过
         res_g7 = self.run_cli("check", ".", "--gate=G7")
         self.assertEqual(res_g7.returncode, 0)
 
@@ -155,6 +184,7 @@ class TestGateRunnerV15(unittest.TestCase):
         self.run_cli("init")
         self.run_cli("freeze")
         self.run_cli("approve", "station_master")
+        self.make_g5_passable()
 
         review_file = self.cwd / "o9_workspace" / "review_and_defects.yaml"
         base_txt = review_file.read_text(encoding="utf-8")
@@ -202,6 +232,7 @@ class TestGateRunnerV15(unittest.TestCase):
         self.run_cli("init")
         self.run_cli("freeze")
         self.run_cli("approve", "station_master")
+        self.make_g6_passable()
 
         apr_log = self.cwd / "o9_workspace" / "approvals.jsonl"
         saved_ledger = apr_log.read_text(encoding="utf-8")
