@@ -1,18 +1,29 @@
 {
-  "project_id": "PRJ-001",
-  "sop_version": "O9-RD-Next-V1.0",
+  "project_id": "PRJ-2026-001",
+  "title": "Project Title",
+  "sop_version": "O9-RD-Next-V1.2",
   "route": "M",
   "state": {
     "phase": "G0",
     "execution_state": "active",
-    "gate_results": {}
+    "gate_results": {
+      "G0": "in-progress",
+      "G0.5": "not-started",
+      "G1": "not-started",
+      "G2": "not-started",
+      "G3": "not-started",
+      "G4": "not-started",
+      "G5": "not-started",
+      "G6": "not-started",
+      "G7": "not-started"
+    }
   },
   "active_baseline": {
     "baseline_id": null,
+    "parent_baseline_id": null,
     "spec_sha256": null,
     "frozen_at": null
   },
   "baseline_history": [],
-  "detached_approvals": [],
   "audit_events": []
 }

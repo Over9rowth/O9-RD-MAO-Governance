@@ -1,3 +1,42 @@
-# G2 Blind Reviews & G5 Defects Ledger
-g2_findings: []
+project_id: PRJ-2026-001
+bound_baseline_id: BL-001
+
+# 1. G2 Blind Three-Perspective Review Ledger
+g2_reviews:
+  review_pack_sha256: null
+  reviewers:
+    - reviewer_id: REV-SESSION-01
+      isolation_level: E1
+      perspectives_checked:
+        A_architecture_and_req: "Checked"
+        B_security_and_reliability: "Checked"
+        C_simpler_alternatives: "No finding"
+  findings_disposition:
+    - finding_id: REV-R1-B-001
+      perspective: B
+      severity: Major
+      director_disposition: "Adopted"
+      resolved: true
+
+# 2. G4 Mock & Stub Inventory (Must be unreachable in production)
+mock_and_stub_inventory:
+  - item_id: MOCK-001
+    location: "tests/mocks/mock_service.py"
+    prod_unreachable_verified: true
+
+# 3. G5 Independent QA Runs (Black-Box First Iron Law)
+g5_test_runs:
+  - run_id: RUN-BB-001
+    phase_type: "black-box-first"
+    tester_session: "QA-SESSION-01"
+    source_code_hidden_verified: true
+    candidate_id: "CAND-001"
+    command_executed: "pytest tests/"
+    exit_code: 0
+    evidence_log_ref: "tests/evidence/run-bb-001.log"
+
+# 4. Defects Ledger (Allowed closed statuses: closed, verified, rejected)
 defects: []
+
+# 5. Manual Verification Todos (For hardware/real-device UX unreachable by AI)
+manual_verification_todos: []
